@@ -121,13 +121,34 @@ func (c *Client) Tools() []Tool {
 }
 
 // CallTool executes a tool on the appropriate MCP server.
+// On network failure it attempts one reconnect before giving up.
 func (c *Client) CallTool(ctx context.Context, name string, argsJSON string) (string, error) {
 	serverName, ok := c.toolServers[name]
 	if !ok {
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
 	srv := c.servers[serverName]
-	return srv.callTool(ctx, name, json.RawMessage(argsJSON))
+	result, err := srv.callTool(ctx, name, json.RawMessage(argsJSON))
+	if err == nil {
+		return result, nil
+	}
+	// On network/HTTP error try to reconnect once
+	if !isRPCError(err) {
+		c.logger.Warn("mcp tool call failed, reconnecting", "server", serverName, "tool", name, "err", err)
+		initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if reinitErr := srv.initialize(initCtx); reinitErr != nil {
+			c.logger.Warn("mcp reconnect failed", "server", serverName, "err", reinitErr)
+			return "", err // return original error
+		}
+		result, err = srv.callTool(ctx, name, json.RawMessage(argsJSON))
+	}
+	return result, err
+}
+
+// isRPCError returns true for JSON-RPC level errors (server is up but returned an error).
+func isRPCError(err error) bool {
+	return err != nil && len(err.Error()) > 9 && err.Error()[:9] == "rpc error"
 }
 
 func (s *server) isToolAllowed(name string) bool {

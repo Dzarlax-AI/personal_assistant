@@ -64,7 +64,14 @@ func (c *Compacter) Compact(ctx context.Context, chatID int64, s store.Store) er
 		history = append(history, row.Message)
 	}
 
-	resp, err := c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+	var resp llm.Response
+	for attempt := range 2 {
+		resp, err = c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+		if err == nil {
+			break
+		}
+		slog.Warn("compaction attempt failed", "attempt", attempt+1, "err", err)
+	}
 	if err != nil {
 		return fmt.Errorf("summarize: %w", err)
 	}

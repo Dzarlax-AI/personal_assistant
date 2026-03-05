@@ -174,6 +174,8 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 	}
 }
 
+const requestTimeout = 5 * time.Minute
+
 func (h *Handler) handleText(msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 
@@ -201,7 +203,9 @@ func (h *Handler) handleText(msg *tgbotapi.Message) {
 		}
 	}
 
-	response, err := h.agent.Process(context.Background(), chatID, llm.Message{Role: "user", Content: msg.Text}, onToolCall)
+	reqCtx, cancelReq := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancelReq()
+	response, err := h.agent.Process(reqCtx, chatID, llm.Message{Role: "user", Content: msg.Text}, onToolCall)
 	stopTyping()
 
 	// Delete live status message
@@ -265,7 +269,9 @@ func (h *Handler) handlePhoto(msg *tgbotapi.Message) {
 		}
 	}
 
-	response, err := h.agent.Process(context.Background(), chatID, llm.Message{Role: "user", Parts: parts}, onToolCall)
+	reqCtx, cancelReq := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancelReq()
+	response, err := h.agent.Process(reqCtx, chatID, llm.Message{Role: "user", Parts: parts}, onToolCall)
 	stopTyping()
 
 	if statusMsgID != 0 {
