@@ -32,13 +32,13 @@ mkdir -p my-assistant/config my-assistant/data
 cd my-assistant
 
 # 2. Download compose file
-curl -O https://raw.githubusercontent.com/dzarlax/personal-assistant/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/dzarlax/personal_assistant/main/docker-compose.yml
 
 # 3. Create config files
-curl -o config/config.yaml https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/config.yaml
-curl -o config/system_prompt.md https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/system_prompt.md.example
-curl -o config/mcp.json https://raw.githubusercontent.com/dzarlax/personal-assistant/main/config/mcp.json.example
-curl -o .env https://raw.githubusercontent.com/dzarlax/personal-assistant/main/.env.example
+curl -o config/config.yaml https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/config.yaml
+curl -o config/system_prompt.md https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/system_prompt.md.example
+curl -o config/mcp.json https://raw.githubusercontent.com/dzarlax/personal_assistant/main/config/mcp.json.example
+curl -o .env https://raw.githubusercontent.com/dzarlax/personal_assistant/main/.env.example
 
 # 4. Fill in secrets
 nano .env
