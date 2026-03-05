@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -17,7 +18,26 @@ import (
 	"telegram-agent/internal/llm"
 )
 
-const maxMessageLen = 4096
+const (
+	maxMessageLen  = 4096
+	requestTimeout = 5 * time.Minute
+	forwardTTL     = 5 * time.Minute
+	batchTimeout   = 2 * time.Second
+)
+
+// forwardedContent holds a buffered forwarded message waiting for user follow-up.
+// text already includes the "[Forwarded from ...]" header prefix.
+type forwardedContent struct {
+	text      string
+	parts     []llm.ContentPart
+	expiresAt time.Time
+}
+
+// pendingBatch accumulates messages for a single chat during the debounce window.
+type pendingBatch struct {
+	msgs  []*tgbotapi.Message
+	timer *time.Timer
+}
 
 type Handler struct {
 	bot     *tgbotapi.BotAPI
@@ -25,6 +45,12 @@ type Handler struct {
 	allowed map[int64]bool
 	ownerID int64
 	logger  *slog.Logger
+
+	forwardMu  sync.Mutex
+	forwardBuf map[int64]*forwardedContent
+
+	batchMu sync.Mutex
+	batches map[int64]*pendingBatch
 }
 
 func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger) (*Handler, error) {
@@ -45,11 +71,13 @@ func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger)
 	}
 
 	return &Handler{
-		bot:     bot,
-		agent:   ag,
-		allowed: allowed,
-		ownerID: cfg.OwnerChatID,
-		logger:  logger,
+		bot:        bot,
+		agent:      ag,
+		allowed:    allowed,
+		ownerID:    cfg.OwnerChatID,
+		logger:     logger,
+		forwardBuf: make(map[int64]*forwardedContent),
+		batches:    make(map[int64]*pendingBatch),
 	}, nil
 }
 
@@ -84,7 +112,6 @@ func (h *Handler) handleUpdate(update tgbotapi.Update) {
 
 	chatID := msg.Chat.ID
 
-	// Access control: chat must be in allowlist AND sender must be the owner
 	if !h.allowed[chatID] || msg.From.ID != h.ownerID {
 		h.logger.Warn("unauthorized access attempt",
 			"chat_id", chatID,
@@ -95,97 +122,146 @@ func (h *Handler) handleUpdate(update tgbotapi.Update) {
 		return
 	}
 
+	// Commands bypass batching — they are interactive and must respond immediately.
 	if msg.IsCommand() {
 		h.handleCommand(msg)
 		return
 	}
 
-	if msg.Photo != nil {
-		h.handlePhoto(msg)
+	h.queueMessage(msg)
+}
+
+// queueMessage adds a message to the per-chat debounce batch.
+// The batch is flushed after batchTimeout of inactivity.
+func (h *Handler) queueMessage(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
+
+	h.batchMu.Lock()
+	b := h.batches[chatID]
+	if b == nil {
+		b = &pendingBatch{}
+		h.batches[chatID] = b
+	}
+	b.msgs = append(b.msgs, msg)
+	if b.timer != nil {
+		b.timer.Stop()
+	}
+	b.timer = time.AfterFunc(batchTimeout, func() {
+		h.processBatch(chatID)
+	})
+	h.batchMu.Unlock()
+}
+
+// processBatch merges all accumulated messages and sends them to the LLM as one request.
+func (h *Handler) processBatch(chatID int64) {
+	h.batchMu.Lock()
+	b := h.batches[chatID]
+	delete(h.batches, chatID)
+	h.batchMu.Unlock()
+
+	if b == nil || len(b.msgs) == 0 {
 		return
 	}
 
-	if msg.Text != "" {
-		h.handleText(msg)
-	}
-}
+	var textParts []string
+	var imageParts []llm.ContentPart
+	hasRegular := false // at least one non-forwarded message
 
-func (h *Handler) handleCommand(msg *tgbotapi.Message) {
-	chatID := msg.Chat.ID
+	for _, msg := range b.msgs {
+		isForward := msg.ForwardDate != 0
 
-	switch msg.Command() {
-	case "start":
-		h.send(chatID, fmt.Sprintf(
-			"Привет\\! Я твой персональный AI\\-ассистент\\.\n\n"+
-				"Модель: `%s`\n\n"+
-				"/clear — сбросить контекст\n"+
-				"/compact — сжать историю\n"+
-				"/model \\[default\\|reasoner\\] — переключить модель\n"+
-				"/tools — доступные инструменты\n"+
-				"/help — справка",
-			h.agent.ModelName(),
-		))
-	case "help":
-		h.send(chatID, fmt.Sprintf(
-			"*Команды:*\n\n"+
-				"/clear — сбросить контекст разговора\n"+
-				"/compact — сжать историю \\(суммаризация\\)\n"+
-				"/model — показать текущую модель\n"+
-				"/model default — переключить на основную\n"+
-				"/model reasoner — переключить на рассуждения\n"+
-				"/tools — список MCP\\-инструментов\n"+
-				"/help — эта справка\n\n"+
-				"*Модель:* `%s`\n"+
-				"Ответы длиннее 4096 символов отправляются как `.md` файл\\.",
-			h.agent.ModelName(),
-		))
-	case "clear":
-		h.agent.ClearHistory(chatID)
-		h.send(chatID, "Контекст сброшен\\.")
-	case "compact":
-		h.sendPlain(chatID, "Сжимаю историю...")
-		if err := h.agent.Compact(context.Background(), chatID); err != nil {
-			h.sendPlain(chatID, "Ошибка: "+err.Error())
-		} else {
-			h.send(chatID, "История сжата\\.")
+		text := msg.Text
+		if text == "" {
+			text = msg.Caption
 		}
-	case "model":
-		arg := strings.TrimSpace(msg.CommandArguments())
-		switch arg {
-		case "":
-			override := h.agent.ModelOverride()
-			if override == "" {
-				override = "default"
+		text = appendTextLinks(text, msg.Entities, msg.CaptionEntities)
+
+		if isForward {
+			header := buildForwardHeader(msg)
+			entry := header
+			if text != "" {
+				entry = header + "\n" + text
 			}
-			h.send(chatID, fmt.Sprintf("Текущая модель: `%s` \\(режим: %s\\)", h.agent.ModelName(), override))
-		case "default", "reset":
-			h.agent.SetModel("")
-			h.send(chatID, fmt.Sprintf("Модель: `%s`", h.agent.ModelName()))
-		case "reasoner":
-			h.agent.SetModel("reasoner")
-			h.send(chatID, fmt.Sprintf("Модель: `%s`", h.agent.ModelName()))
-		default:
-			h.send(chatID, "Доступные режимы: `default`, `reasoner`")
+			textParts = append(textParts, entry)
+		} else {
+			hasRegular = true
+			if text != "" {
+				textParts = append(textParts, text)
+			}
 		}
-	case "tools":
-		h.handleToolsCommand(chatID)
-	default:
-		h.send(chatID, "Неизвестная команда\\. /help — справка\\.")
+
+		// Download photo from any message in the batch (forwarded or not)
+		if msg.Photo != nil {
+			photo := msg.Photo[len(msg.Photo)-1]
+			data, err := h.downloadFile(photo.FileID)
+			if err != nil {
+				h.logger.Error("failed to download photo in batch", "err", err)
+				continue
+			}
+			imageParts = append(imageParts, llm.ContentPart{
+				Type: "image_url",
+				ImageURL: &llm.ImageURL{
+					URL: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data),
+				},
+			})
+		}
 	}
+
+	// If only forwarded messages arrived (no regular user message), buffer and ack.
+	if !hasRegular {
+		h.forwardMu.Lock()
+		h.forwardBuf[chatID] = &forwardedContent{
+			text:      strings.Join(textParts, "\n"),
+			parts:     imageParts,
+			expiresAt: time.Now().Add(forwardTTL),
+		}
+		h.forwardMu.Unlock()
+		h.sendPlain(chatID, "✓ Received. Add your question or comment.")
+		return
+	}
+
+	// Consume any previously buffered forward (slow follow-up path).
+	h.forwardMu.Lock()
+	fwd := h.forwardBuf[chatID]
+	if fwd != nil && time.Now().After(fwd.expiresAt) {
+		fwd = nil
+	}
+	delete(h.forwardBuf, chatID)
+	h.forwardMu.Unlock()
+
+	if fwd != nil {
+		textParts = append([]string{fwd.text}, textParts...)
+		imageParts = append(fwd.parts, imageParts...)
+	}
+
+	// Build the LLM message.
+	combined := strings.Join(textParts, "\n\n")
+	var userMsg llm.Message
+
+	if len(imageParts) > 0 {
+		if combined == "" {
+			combined = "What is in this image?"
+		}
+		parts := append([]llm.ContentPart{{Type: "text", Text: combined}}, imageParts...)
+		userMsg = llm.Message{Role: "user", Parts: parts}
+	} else {
+		if combined == "" {
+			return
+		}
+		userMsg = llm.Message{Role: "user", Content: combined}
+	}
+
+	h.executeMessage(chatID, userMsg)
 }
 
-const requestTimeout = 5 * time.Minute
-
-func (h *Handler) handleText(msg *tgbotapi.Message) {
-	chatID := msg.Chat.ID
-
+// executeMessage sends a prepared LLM message and streams the response back to Telegram.
+func (h *Handler) executeMessage(chatID int64, userMsg llm.Message) {
 	typingCtx, stopTyping := context.WithCancel(context.Background())
 	defer stopTyping()
 	go h.sendTypingLoop(chatID, typingCtx)
 
-	h.logger.Info("processing message", "chat_id", chatID, "len", len(msg.Text))
+	h.logger.Info("processing message", "chat_id", chatID, "has_parts", len(userMsg.Parts) > 0)
 
-	// Track tool calls for live status and response footnote
 	var toolsUsed []string
 	var statusMsgID int
 
@@ -205,21 +281,19 @@ func (h *Handler) handleText(msg *tgbotapi.Message) {
 
 	reqCtx, cancelReq := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancelReq()
-	response, err := h.agent.Process(reqCtx, chatID, llm.Message{Role: "user", Content: msg.Text}, onToolCall)
+	response, err := h.agent.Process(reqCtx, chatID, userMsg, onToolCall)
 	stopTyping()
 
-	// Delete live status message
 	if statusMsgID != 0 {
 		h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
 	}
 
 	if err != nil {
 		h.logger.Error("agent error", "err", err)
-		h.sendPlain(chatID, "Произошла ошибка: "+err.Error())
+		h.sendPlain(chatID, "Error: "+err.Error())
 		return
 	}
 
-	// Append tool footnote to response
 	if len(toolsUsed) > 0 {
 		response += "\n\n`⚙️ " + strings.Join(toolsUsed, " · ") + "`"
 	}
@@ -227,64 +301,105 @@ func (h *Handler) handleText(msg *tgbotapi.Message) {
 	h.sendResponse(chatID, response)
 }
 
-func (h *Handler) handlePhoto(msg *tgbotapi.Message) {
-	chatID := msg.Chat.ID
-
-	// Pick the highest resolution photo
-	photo := msg.Photo[len(msg.Photo)-1]
-	data, err := h.downloadFile(photo.FileID)
-	if err != nil {
-		h.logger.Error("failed to download photo", "err", err)
-		h.sendPlain(chatID, "Не удалось загрузить фото.")
-		return
-	}
-
-	parts := []llm.ContentPart{
-		{Type: "image_url", ImageURL: &llm.ImageURL{
-			URL: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data),
-		}},
-	}
-	caption := msg.Caption
-	if caption == "" {
-		caption = "Что на этом изображении?"
-	}
-	parts = append([]llm.ContentPart{{Type: "text", Text: caption}}, parts...)
-
-	typingCtx, stopTyping := context.WithCancel(context.Background())
-	defer stopTyping()
-	go h.sendTypingLoop(chatID, typingCtx)
-
-	var toolsUsed []string
-	var statusMsgID int
-	onToolCall := func(toolName string) {
-		toolsUsed = append(toolsUsed, toolName)
-		text := "⚙️ " + strings.Join(toolsUsed, " → ")
-		if statusMsgID == 0 {
-			m, err := h.bot.Send(tgbotapi.NewMessage(chatID, text))
-			if err == nil {
-				statusMsgID = m.MessageID
+// appendTextLinks appends hidden URLs from text_link entities to the message text.
+// Plain URLs are already visible in the text and need no special handling.
+func appendTextLinks(text string, entitySets ...[]tgbotapi.MessageEntity) string {
+	var links []string
+	seen := make(map[string]bool)
+	for _, entities := range entitySets {
+		for _, e := range entities {
+			if e.Type == "text_link" && e.URL != "" && !seen[e.URL] {
+				seen[e.URL] = true
+				links = append(links, e.URL)
 			}
-		} else {
-			h.bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsgID, text)) //nolint:errcheck
 		}
 	}
+	if len(links) == 0 {
+		return text
+	}
+	return text + "\n" + strings.Join(links, "\n")
+}
 
-	reqCtx, cancelReq := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancelReq()
-	response, err := h.agent.Process(reqCtx, chatID, llm.Message{Role: "user", Parts: parts}, onToolCall)
-	stopTyping()
+// buildForwardHeader builds a "[Forwarded from ...]" label from a forwarded message.
+func buildForwardHeader(msg *tgbotapi.Message) string {
+	switch {
+	case msg.ForwardFrom != nil:
+		if msg.ForwardFrom.UserName != "" {
+			return fmt.Sprintf("[Forwarded from @%s]", msg.ForwardFrom.UserName)
+		}
+		return fmt.Sprintf("[Forwarded from %s %s]", msg.ForwardFrom.FirstName, msg.ForwardFrom.LastName)
+	case msg.ForwardFromChat != nil:
+		if msg.ForwardFromChat.UserName != "" {
+			return fmt.Sprintf("[Forwarded from @%s]", msg.ForwardFromChat.UserName)
+		}
+		return fmt.Sprintf("[Forwarded from %s]", msg.ForwardFromChat.Title)
+	default:
+		return "[Forwarded]"
+	}
+}
 
-	if statusMsgID != 0 {
-		h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
+func (h *Handler) handleCommand(msg *tgbotapi.Message) {
+	chatID := msg.Chat.ID
+
+	switch msg.Command() {
+	case "start":
+		h.send(chatID, fmt.Sprintf(
+			"Hi\\! I'm your personal AI assistant\\.\n\n"+
+				"Model: `%s`\n\n"+
+				"/clear — reset context\n"+
+				"/compact — compress history\n"+
+				"/model \\[default\\|reasoner\\] — switch model\n"+
+				"/tools — available tools\n"+
+				"/help — help",
+			h.agent.ModelName(),
+		))
+	case "help":
+		h.send(chatID, fmt.Sprintf(
+			"*Commands:*\n\n"+
+				"/clear — reset conversation context\n"+
+				"/compact — compress history \\(summarise\\)\n"+
+				"/model — show current model\n"+
+				"/model default — switch to default\n"+
+				"/model reasoner — switch to reasoner\n"+
+				"/tools — list MCP tools\n"+
+				"/help — this help\n\n"+
+				"*Model:* `%s`\n"+
+				"Responses longer than 4096 chars are sent as a `.md` file\\.",
+			h.agent.ModelName(),
+		))
+	case "clear":
+		h.agent.ClearHistory(chatID)
+		h.send(chatID, "Context cleared\\.")
+	case "compact":
+		h.sendPlain(chatID, "Compressing history...")
+		if err := h.agent.Compact(context.Background(), chatID); err != nil {
+			h.sendPlain(chatID, "Error: "+err.Error())
+		} else {
+			h.send(chatID, "History compressed\\.")
+		}
+	case "model":
+		arg := strings.TrimSpace(msg.CommandArguments())
+		switch arg {
+		case "":
+			override := h.agent.ModelOverride()
+			if override == "" {
+				override = "default"
+			}
+			h.send(chatID, fmt.Sprintf("Current model: `%s` \\(mode: %s\\)", h.agent.ModelName(), override))
+		case "default", "reset":
+			h.agent.SetModel("")
+			h.send(chatID, fmt.Sprintf("Model: `%s`", h.agent.ModelName()))
+		case "reasoner":
+			h.agent.SetModel("reasoner")
+			h.send(chatID, fmt.Sprintf("Model: `%s`", h.agent.ModelName()))
+		default:
+			h.send(chatID, "Available modes: `default`, `reasoner`")
+		}
+	case "tools":
+		h.handleToolsCommand(chatID)
+	default:
+		h.send(chatID, "Unknown command\\. /help for help\\.")
 	}
-	if err != nil {
-		h.sendPlain(chatID, "Произошла ошибка: "+err.Error())
-		return
-	}
-	if len(toolsUsed) > 0 {
-		response += "\n\n`⚙️ " + strings.Join(toolsUsed, " · ") + "`"
-	}
-	h.sendResponse(chatID, response)
 }
 
 func (h *Handler) downloadFile(fileID string) ([]byte, error) {
@@ -334,7 +449,7 @@ func (h *Handler) sendAsFile(chatID int64, text string) {
 
 	if _, err := h.bot.Send(doc); err != nil {
 		h.logger.Error("failed to send document", "err", err)
-		h.sendPlain(chatID, text[:maxMessageLen-50]+"...\n\n_(ответ обрезан)_")
+		h.sendPlain(chatID, text[:maxMessageLen-50]+"...\n\n_(response truncated)_")
 	}
 }
 
@@ -372,11 +487,11 @@ func (h *Handler) sendTypingLoop(chatID int64, ctx context.Context) {
 
 func registerCommands(bot *tgbotapi.BotAPI) error {
 	commands := []tgbotapi.BotCommand{
-		{Command: "clear", Description: "Сбросить контекст разговора"},
-		{Command: "compact", Description: "Сжать историю (суммаризация)"},
-		{Command: "model", Description: "Показать / переключить модель"},
-		{Command: "tools", Description: "Список подключённых MCP-инструментов"},
-		{Command: "help", Description: "Справка"},
+		{Command: "clear", Description: "Reset conversation context"},
+		{Command: "compact", Description: "Compress history (summarise)"},
+		{Command: "model", Description: "Show / switch model"},
+		{Command: "tools", Description: "List connected MCP tools"},
+		{Command: "help", Description: "Help"},
 	}
 	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
 	return err
@@ -385,10 +500,9 @@ func registerCommands(bot *tgbotapi.BotAPI) error {
 func (h *Handler) handleToolsCommand(chatID int64) {
 	tools := h.agent.ListTools()
 	if len(tools) == 0 {
-		h.sendPlain(chatID, "MCP-инструменты не подключены.")
+		h.sendPlain(chatID, "No MCP tools connected.")
 		return
 	}
-	// Group by server
 	byServer := make(map[string][]string)
 	order := make([]string, 0)
 	for _, t := range tools {
@@ -398,7 +512,7 @@ func (h *Handler) handleToolsCommand(chatID int64) {
 		byServer[t.ServerName] = append(byServer[t.ServerName], t.Name)
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Инструменты (%d):\n", len(tools)))
+	sb.WriteString(fmt.Sprintf("Tools (%d):\n", len(tools)))
 	for _, srv := range order {
 		sb.WriteString(fmt.Sprintf("\n%s:\n", srv))
 		for _, name := range byServer[srv] {
@@ -412,7 +526,7 @@ func (h *Handler) notifyOwner(msg *tgbotapi.Message) {
 	if h.ownerID == 0 {
 		return
 	}
-	text := fmt.Sprintf("Попытка доступа: @%s (chat_id: %d, user_id: %d)",
+	text := fmt.Sprintf("Access attempt: @%s (chat_id: %d, user_id: %d)",
 		msg.From.UserName, msg.Chat.ID, msg.From.ID)
 	notification := tgbotapi.NewMessage(h.ownerID, text)
 	if _, err := h.bot.Send(notification); err != nil {

@@ -10,8 +10,7 @@ import (
 )
 
 var reasonerKeywords = []string{
-	"подумай пошагово", "рассуди", "докажи", "разбери по шагам",
-	"step by step", "think step",
+	"step by step", "think step", "reason through", "prove", "break it down",
 }
 
 // Router selects the appropriate LLM provider based on context.

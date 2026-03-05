@@ -60,7 +60,7 @@ func main() {
 
 	var multimodal llm.Provider
 	if cfg.Models.Multimodal.APIKey != "" {
-		multimodal, err = llm.NewGemini(cfg.Models.Multimodal)
+		multimodal, err = llm.NewGeminiMultimodal(cfg.Models.Multimodal)
 		if err != nil {
 			logger.Warn("failed to init multimodal LLM", "err", err)
 		}

@@ -14,9 +14,10 @@ type openAICompatProvider struct {
 	model     string
 	maxTokens int
 	provName  string
+	vision    bool // if false, image_url parts in history are stripped
 }
 
-func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string) (*openAICompatProvider, error) {
+func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string, vision ...bool) (*openAICompatProvider, error) {
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("%s: api_key is required", providerName)
 	}
@@ -31,16 +32,20 @@ func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string
 	if maxTokens == 0 {
 		maxTokens = 4096
 	}
-	return &openAICompatProvider{
+	p := &openAICompatProvider{
 		client:    openai.NewClientWithConfig(ocfg),
 		model:     cfg.Model,
 		maxTokens: maxTokens,
 		provName:  providerName,
-	}, nil
+	}
+	if len(vision) > 0 {
+		p.vision = vision[0]
+	}
+	return p, nil
 }
 
 func (p *openAICompatProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
-	msgs := buildMessages(messages, systemPrompt)
+	msgs := buildMessages(messages, systemPrompt, p.vision)
 	req := openai.ChatCompletionRequest{
 		Model:     p.model,
 		Messages:  msgs,
@@ -74,7 +79,7 @@ func (p *openAICompatProvider) Name() string {
 	return p.provName + "/" + p.model
 }
 
-func buildMessages(messages []Message, systemPrompt string) []openai.ChatCompletionMessage {
+func buildMessages(messages []Message, systemPrompt string, vision bool) []openai.ChatCompletionMessage {
 	msgs := make([]openai.ChatCompletionMessage, 0, len(messages)+1)
 	if systemPrompt != "" {
 		msgs = append(msgs, openai.ChatCompletionMessage{
@@ -96,7 +101,13 @@ func buildMessages(messages []Message, systemPrompt string) []openai.ChatComplet
 						Text: p.Text,
 					})
 				case "image_url":
-					if p.ImageURL != nil {
+					if !vision {
+						// Non-vision provider: replace image with a text placeholder
+						msg.MultiContent = append(msg.MultiContent, openai.ChatMessagePart{
+							Type: openai.ChatMessagePartTypeText,
+							Text: "[image]",
+						})
+					} else if p.ImageURL != nil {
 						msg.MultiContent = append(msg.MultiContent, openai.ChatMessagePart{
 							Type:     openai.ChatMessagePartTypeImageURL,
 							ImageURL: &openai.ChatMessageImageURL{URL: p.ImageURL.URL},

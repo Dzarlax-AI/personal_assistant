@@ -39,7 +39,7 @@ flowchart LR
 
 **`internal/llm`** — LLM abstraction.
 - `provider.go` — `Provider` interface + `Message`, `Tool`, `ContentPart`, `ImageURL` types
-- `openai_compat.go` — shared OpenAI-compatible implementation; `buildMessages` handles both text (`Content`) and multimodal (`Parts`) messages via `MultiContent`
+- `openai_compat.go` — shared OpenAI-compatible implementation; `buildMessages(messages, systemPrompt, vision bool)` handles text (`Content`) and multimodal (`Parts`). When `vision=false` (all providers except multimodal Gemini), `image_url` parts in history are replaced with `[image]` to avoid 400 errors from non-vision models.
 - `router.go` — picks provider: multimodal (if Parts present) → reasoner (keyword/override) → primary → fallback on 5xx/429/network
 - All providers require `base_url` in config (no hardcoded defaults)
 
@@ -59,9 +59,9 @@ flowchart LR
 
 **`internal/telegram`** — Telegram Bot API handler.
 - `markdown.go` — Markdown → Telegram HTML converter (headers, bold, italic, code blocks, links, lists). No external deps.
-- `handler.go` — `handleText` for text, `handlePhoto` for images (downloads via Telegram File API, encodes base64, sends as `ContentPart`)
-- Responses ≥ 4096 chars sent as `response.md` attachment
-- Live tool status: message edited during tool calls, deleted on completion; footnote appended to final response
+- `handler.go` — all non-command messages go through a 2 s debounce batch (`queueMessage` → `processBatch`). The batch merges text, photos, and forwarded messages into a single `llm.Message` before calling `executeMessage`. Forwarded-only batches are stored in `forwardBuf` (5 min TTL) and acknowledged with `✓`; the next regular message consumes the buffer. Hidden hyperlinks (`text_link` entities) are appended as plain URLs.
+- `executeMessage` — shared processing path: typing loop, live tool-call status (edited message), `agent.Process`, response send.
+- Responses ≥ 4096 chars sent as `response.md` attachment.
 
 ### Configuration files
 

@@ -14,9 +14,9 @@ const (
 	compactionCharThreshold = 60000 // ~20K tokens, practical threshold for daily use
 )
 
-const compactionSystemPrompt = `Сожми историю разговора в краткое резюме на том же языке что и разговор.
-Сохрани: ключевые факты о пользователе, принятые решения, незавершённые задачи, важный контекст.
-Пиши только суть — без предисловий и лишних слов.`
+const compactionSystemPrompt = `Summarise the conversation history into a concise summary in the same language as the conversation.
+Preserve: key facts about the user, decisions made, pending tasks, and important context.
+Write only the essential content — no preamble or filler.`
 
 // Compacter summarizes old conversation history.
 type Compacter struct {
@@ -77,7 +77,7 @@ func (c *Compacter) Compact(ctx context.Context, chatID int64, s store.Store) er
 	}
 
 	// Insert summary before marking old messages as compacted
-	cs.AddSummary(chatID, "[Резюме предыдущего разговора]\n\n"+resp.Content)
+	cs.AddSummary(chatID, "[Summary of previous conversation]\n\n"+resp.Content)
 
 	ids := make([]int64, len(toCompact))
 	for i, row := range toCompact {

@@ -6,6 +6,8 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 - **Multi-model routing** — DeepSeek Chat as primary; Gemini 3.1 Flash Lite as automatic fallback on errors or rate limits; DeepSeek Reasoner for complex tasks; Gemini 3 Flash Preview for images
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
+- **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically
+- **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
 - **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering
 - **Persistent memory** — SQLite-backed conversation history with automatic session management
 - **Context compaction** — auto-summarises old history to stay within token limits
@@ -206,7 +208,7 @@ flowchart TD
         S3["..."]
     end
 
-    User -->|"text / photo"| Handler
+    User -->|"text / photo / forward"| Handler
     Handler --> Agent
     Agent <--> Store
     Agent --> Router
