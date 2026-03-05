@@ -1,4 +1,6 @@
-FROM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -6,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o bin/agent ./cmd/agent
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -ldflags="-w -s" -o bin/agent ./cmd/agent
 
 FROM alpine:3.19
 
