@@ -189,9 +189,11 @@ Plain text or Markdown injected as system prompt on every request.
 | Priority | Provider | When |
 |---|---|---|
 | 1 | Gemini 3 Flash Preview | Message contains an image |
-| 2 | DeepSeek Reasoner | `/model reasoner` or reasoning keywords |
+| 2 | DeepSeek Reasoner | `/model reasoner` or LLM classifier detects complex reasoning needed |
 | 3 | DeepSeek Chat | Default |
 | 4 | Gemini 3.1 Flash Lite | Primary unavailable (5xx / 429 / network) |
+
+The classifier is DeepSeek Chat itself — a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100), skipping short commands entirely. Set `classifier_min_length: 0` to disable auto-routing and rely on `/model reasoner` only.
 
 ## Session Management
 

@@ -78,9 +78,11 @@ Paths are hardcoded in `main.go` as `config/config.yaml`, `config/system_prompt.
 ### LLM routing priority
 
 1. **Multimodal** (Gemini 3 Flash Preview) — message has image `Parts`
-2. **Reasoner** (DeepSeek Reasoner) — `/model reasoner` or keyword in message
+2. **Reasoner** (DeepSeek Reasoner) — `/model reasoner` override, or LLM classifier returns `yes`
 3. **Primary** (DeepSeek Chat) — default
 4. **Fallback** (Gemini 3.1 Flash Lite) — primary returns 5xx/429/network error
+
+Classifier: primary (DeepSeek Chat) is called with no history, no tools, 1-token response (`yes`/`no`). Only fires when message ≥ `classifier_min_length` chars (default 100). Disabled when `classifier_min_length: 0`. Falls back to primary on error.
 
 ### Tool filtering (vector similarity)
 
