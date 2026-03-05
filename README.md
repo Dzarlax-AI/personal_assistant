@@ -220,4 +220,4 @@ flowchart TD
     MCP --> S3
 ```
 
-See [CLAUDE.md](CLAUDE.md) for developer details and [docs/InitialSpec.md](docs/InitialSpec.md) for full spec.
+See [CLAUDE.md](CLAUDE.md) for developer details.
