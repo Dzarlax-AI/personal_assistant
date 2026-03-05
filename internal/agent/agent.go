@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/mcp"
@@ -52,7 +53,8 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	for i := 0; i < maxToolIterations; i++ {
 		history := a.store.GetHistory(chatID)
 
-		resp, err := a.router.Chat(ctx, history, a.sysPrompt, tools)
+		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
+		resp, err := a.router.Chat(ctx, history, sysPrompt, tools)
 		if err != nil {
 			return "", fmt.Errorf("llm: %w", err)
 		}
