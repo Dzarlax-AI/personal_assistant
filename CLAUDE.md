@@ -39,8 +39,8 @@ flowchart LR
 
 **`internal/llm`** — LLM abstraction.
 - `provider.go` — `Provider` interface + `Message`, `Tool`, `ContentPart`, `ImageURL` types
-- `openai_compat.go` — shared OpenAI-compatible implementation; `buildMessages(messages, systemPrompt, vision bool)` handles text (`Content`) and multimodal (`Parts`). When `vision=false` (all providers except multimodal Gemini), `image_url` parts in history are replaced with `[image]` to avoid 400 errors from non-vision models.
-- `router.go` — picks provider: multimodal (if Parts present) → reasoner (keyword/override) → primary → fallback on 5xx/429/network
+- `openai_compat.go` — shared OpenAI-compatible implementation using raw `net/http` (no go-openai). `buildMessages(messages, systemPrompt, vision bool)` serialises messages with full control: assistant messages with `tool_calls` and empty content use `"content": null` (not omitted) to satisfy all provider APIs. `image_url` parts are replaced with `[image]` for non-vision providers. Defines `APIError{StatusCode, Message}` for fallback routing.
+- `router.go` — thread-safe routing config (`mu` protects both `override` and `cfg`). Priority: multimodal → override → classifier→reasoner → primary → fallback on 5xx/429/network. `SetRole(role, model)` + `SetClassifierMinLen(n)` allow runtime changes; `saveOverrides()` persists to `persistPath` (JSON) on every change; `LoadPersistedOverrides()` applies saved values on startup.
 - All providers require `base_url` in config (no hardcoded defaults)
 
 **`internal/store`** — conversation history.
@@ -62,27 +62,32 @@ flowchart LR
 - `markdown.go` — Markdown → Telegram HTML converter (headers, bold, italic, code blocks, links, lists). No external deps.
 - `handler.go` — all non-command messages go through a 2 s debounce batch (`queueMessage` → `processBatch`). The batch merges text, photos, and forwarded messages into a single `llm.Message` before calling `executeMessage`. Forwarded-only batches are stored in `forwardBuf` (5 min TTL) and acknowledged with `✓`; the next regular message consumes the buffer. Hidden hyperlinks (`text_link` entities) are appended as plain URLs.
 - `executeMessage` — shared processing path: typing loop, live tool-call status (edited message), `agent.Process`, response send.
+- `/routing` command — sends an inline keyboard menu for live routing config changes (primary, fallback, reasoner, classifier, multimodal, classifier threshold). Callback queries (`rt:role:*`, `rt:set:*`, `rt:min:*`) edit the same message in-place. Changes are persisted via `agent.SetRoutingRole` / `SetClassifierMinLen`.
+- `NotifyMissingRouting()` — called at startup; sends an inline model-picker to the owner for each routing role that references a provider not present in the providers map.
 - Responses ≥ 4096 chars sent as `response.md` attachment.
 
 ### Configuration files
 
 | File | Purpose |
 |---|---|
-| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`) — auto-loaded by Docker Compose from project root |
+| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`) — auto-loaded by Docker Compose from project root |
 | `config/config.yaml` | Models (all require `base_url`; `embedding` model is exception — no `base_url`/`max_tokens`), routing, tool_filter, Telegram IDs — `${ENV_VAR}` substitution |
+| `config/routing.json` | Runtime routing overrides written by `/routing` inline UI — auto-created, applied on top of `config.yaml` at startup |
 | `config/mcp.json` | MCP servers in Claude Desktop format — `allowTools`, `denyTools` per server |
 | `config/system_prompt.md` | System prompt injected on every LLM request |
 
-Paths are hardcoded in `main.go` as `config/config.yaml`, `config/system_prompt.md`, `config/mcp.json`. Docker Compose mounts `./config:/app/config:ro` and passes secrets via `environment:` using `${VAR}` from `.env`.
+Paths are hardcoded in `main.go` as `config/config.yaml`, `config/system_prompt.md`, `config/mcp.json`. Docker Compose mounts `./config:/app/config` (writable — `routing.json` is written at runtime) and passes secrets via `environment:` using `${VAR}` from `.env`.
 
 ### LLM routing priority
 
-1. **Multimodal** (Gemini 3 Flash Preview) — message has image `Parts`
-2. **Reasoner** (DeepSeek Reasoner) — `/model reasoner` override, or LLM classifier returns `yes`
-3. **Primary** (DeepSeek Chat) — default
-4. **Fallback** (Gemini 3.1 Flash Lite) — primary returns 5xx/429/network error
+1. **Multimodal** (`gemini-flash`) — message has image `Parts`
+2. **Reasoner** (`deepseek-r1`) — `/model deepseek-r1` override, or LLM classifier returns `yes`
+3. **Primary** (`deepseek`) — default
+4. **Fallback** (`gemini-flash-lite`) — primary returns 5xx/429/network error
 
-Classifier: primary (DeepSeek Chat) is called with no history, no tools, 1-token response (`yes`/`no`). Only fires when message ≥ `classifier_min_length` chars (default 100). Disabled when `classifier_min_length: 0`. Falls back to primary on error.
+Classifier: a separate provider call (default: `qwen-flash`) with no history and no tools, returns `yes`/`no`. Only fires when message ≥ `classifier_min_length` chars (default 100). Disabled when `classifier_min_length: 0` or classifier provider unavailable. Falls back to primary on error.
+
+All routing roles are configurable at runtime via `/routing` inline keyboard and persist across restarts in `config/routing.json`.
 
 ### Tool filtering (vector similarity)
 
@@ -105,4 +110,4 @@ Flag columns: `is_reset`, `is_compacted`, `is_summary`, `parts` (JSON). Queries 
 
 ### Adding multimodal content types
 
-`llm.Message.Parts []ContentPart` supports `"text"`, `"image_url"`. Audio (`"input_audio"`) is defined in types but not wired in the handler — go-openai doesn't support it, would require raw HTTP.
+`llm.Message.Parts []ContentPart` supports `"text"`, `"image_url"`. Audio (`"input_audio"`) is defined in types but not wired in the handler.

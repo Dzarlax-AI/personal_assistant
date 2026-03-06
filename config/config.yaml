@@ -5,25 +5,25 @@ telegram:
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
 models:
-  default:
+  deepseek:
     provider: deepseek
     model: deepseek-chat
     api_key: ${DEEPSEEK_API_KEY}
     max_tokens: 4096
     base_url: https://api.deepseek.com
-  reasoner:
+  deepseek-r1:
     provider: deepseek
     model: deepseek-reasoner
     api_key: ${DEEPSEEK_API_KEY}
     max_tokens: 8192
     base_url: https://api.deepseek.com
-  flash_lite:
+  gemini-flash-lite:
     provider: gemini
     model: gemini-3.1-flash-lite-preview
     api_key: ${GEMINI_API_KEY}
     max_tokens: 2048
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-  multimodal:
+  gemini-flash:
     provider: gemini
     model: gemini-3-flash-preview
     api_key: ${GEMINI_API_KEY}
@@ -33,19 +33,19 @@ models:
     provider: gemini
     model: gemini-embedding-001
     api_key: ${GEMINI_API_KEY}
-  qwen_flash:
+  qwen-flash:
     provider: qwen
     model: qwen3.5-flash
     api_key: ${QWEN_API_KEY}
     max_tokens: 4096
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen_122b:
+  qwen3.5-plus:
     provider: qwen
     model: qwen3.5-122b-a10b
     api_key: ${QWEN_API_KEY}
     max_tokens: 4096
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  qwen_max:
+  qwen-max:
     provider: qwen
     model: qwen3-max
     api_key: ${QWEN_API_KEY}
@@ -53,10 +53,12 @@ models:
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 routing:
-  default: default
-  fallback: flash_lite
-  compaction_model: default
-  classifier: qwen_122b
+  default: deepseek
+  fallback: gemini-flash-lite
+  multimodal: gemini-flash
+  reasoner: deepseek-r1
+  compaction_model: deepseek
+  classifier: qwen-flash
   classifier_min_length: 100
 
 tool_filter:

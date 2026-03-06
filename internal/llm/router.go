@@ -2,12 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"sync"
-
 )
 
 const classifierPrompt = `Does this message require deep step-by-step reasoning, mathematical proof, or complex multi-step analysis? Reply with only 'yes' or 'no'.`
@@ -22,14 +23,25 @@ type RouterConfig struct {
 	ClassifierMinLen int    // min rune length to run classifier; 0 = disabled
 }
 
+// routingOverrides is the persisted subset of RouterConfig (JSON file).
+type routingOverrides struct {
+	Primary          string `json:"primary,omitempty"`
+	Fallback         string `json:"fallback,omitempty"`
+	Multimodal       string `json:"multimodal,omitempty"`
+	Reasoner         string `json:"reasoner,omitempty"`
+	Classifier       string `json:"classifier,omitempty"`
+	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
+}
+
 // Router selects the appropriate LLM provider based on context.
 // All providers are stored by name; special roles reference names from RouterConfig.
 type Router struct {
 	providers map[string]Provider
 	cfg       RouterConfig
 
-	mu       sync.RWMutex
-	override string // set via SetOverride; any key in providers, or "" for auto
+	mu          sync.RWMutex
+	override    string // set via SetOverride; any key in providers, or "" for auto
+	persistPath string // path to save/load routing overrides; empty = no persistence
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
@@ -43,12 +55,127 @@ func NewRouter(providers map[string]Provider, cfg RouterConfig) *Router {
 	}
 }
 
+// SetPersistPath sets the file path for persisting routing overrides.
+func (r *Router) SetPersistPath(path string) {
+	r.mu.Lock()
+	r.persistPath = path
+	r.mu.Unlock()
+}
+
+// LoadPersistedOverrides reads routing overrides from the persist path and applies them.
+func (r *Router) LoadPersistedOverrides() error {
+	r.mu.RLock()
+	path := r.persistPath
+	r.mu.RUnlock()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var ov routingOverrides
+	if err := json.Unmarshal(data, &ov); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ov.Primary != "" {
+		r.cfg.Primary = ov.Primary
+	}
+	if ov.Fallback != "" {
+		r.cfg.Fallback = ov.Fallback
+	}
+	if ov.Multimodal != "" {
+		r.cfg.Multimodal = ov.Multimodal
+	}
+	if ov.Reasoner != "" {
+		r.cfg.Reasoner = ov.Reasoner
+	}
+	if ov.Classifier != "" {
+		r.cfg.Classifier = ov.Classifier
+	}
+	if ov.ClassifierMinLen != nil {
+		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
+	}
+	return nil
+}
+
+// saveOverrides writes current cfg to the persist path. Must be called with mu held.
+func (r *Router) saveOverrides() {
+	if r.persistPath == "" {
+		return
+	}
+	minLen := r.cfg.ClassifierMinLen
+	ov := routingOverrides{
+		Primary:          r.cfg.Primary,
+		Fallback:         r.cfg.Fallback,
+		Multimodal:       r.cfg.Multimodal,
+		Reasoner:         r.cfg.Reasoner,
+		Classifier:       r.cfg.Classifier,
+		ClassifierMinLen: &minLen,
+	}
+	data, err := json.Marshal(ov)
+	if err != nil {
+		return
+	}
+	os.WriteFile(r.persistPath, data, 0644) //nolint:errcheck
+}
+
+// GetConfig returns a snapshot of the current routing configuration.
+func (r *Router) GetConfig() RouterConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.cfg
+}
+
+// SetRole updates a routing role to point at the given model name.
+// Valid roles: primary, fallback, reasoner, classifier, multimodal.
+func (r *Router) SetRole(role, model string) error {
+	if _, ok := r.providers[model]; !ok {
+		return errors.New("unknown model: " + model)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch role {
+	case "primary":
+		r.cfg.Primary = model
+	case "fallback":
+		r.cfg.Fallback = model
+	case "reasoner":
+		r.cfg.Reasoner = model
+	case "classifier":
+		r.cfg.Classifier = model
+	case "multimodal":
+		r.cfg.Multimodal = model
+	default:
+		return errors.New("unknown role: " + role)
+	}
+	r.saveOverrides()
+	return nil
+}
+
+// SetClassifierMinLen sets the minimum message length to trigger the classifier.
+// Set to 0 to disable classifier routing.
+func (r *Router) SetClassifierMinLen(n int) {
+	r.mu.Lock()
+	r.cfg.ClassifierMinLen = n
+	r.saveOverrides()
+	r.mu.Unlock()
+}
+
 func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
 	provider := r.pick(ctx, messages)
 
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
 	if err != nil && isUnavailable(err) {
-		if fallback := r.get(r.cfg.Fallback); fallback != nil && fallback != provider {
+		r.mu.RLock()
+		fallbackKey := r.cfg.Fallback
+		r.mu.RUnlock()
+		if fallback := r.get(fallbackKey); fallback != nil && fallback != provider {
 			if r.OnFallback != nil {
 				r.OnFallback(provider.Name(), fallback.Name())
 			}
@@ -94,14 +221,15 @@ func (r *Router) ProviderNames() []string {
 }
 
 func (r *Router) pick(ctx context.Context, messages []Message) Provider {
-	// Multimodal takes priority — only vision-capable models support image parts
-	if p := r.get(r.cfg.Multimodal); p != nil && hasMultimodalContent(messages) {
-		return p
-	}
-
 	r.mu.RLock()
+	cfg := r.cfg
 	override := r.override
 	r.mu.RUnlock()
+
+	// Multimodal takes priority — only vision-capable models support image parts
+	if p := r.get(cfg.Multimodal); p != nil && hasMultimodalContent(messages) {
+		return p
+	}
 
 	if override != "" {
 		if p := r.get(override); p != nil {
@@ -110,9 +238,9 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	}
 
 	// Classifier-based routing to reasoner
-	if r.cfg.ClassifierMinLen > 0 {
-		if p := r.get(r.cfg.Reasoner); p != nil {
-			if text := lastUserText(messages); len([]rune(text)) >= r.cfg.ClassifierMinLen {
+	if cfg.ClassifierMinLen > 0 {
+		if p := r.get(cfg.Reasoner); p != nil {
+			if text := lastUserText(messages); len([]rune(text)) >= cfg.ClassifierMinLen {
 				if r.classify(ctx, text) {
 					return p
 				}
@@ -120,7 +248,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		}
 	}
 
-	if p := r.get(r.cfg.Primary); p != nil {
+	if p := r.get(cfg.Primary); p != nil {
 		return p
 	}
 	// Should never happen if config is valid
@@ -140,9 +268,13 @@ func (r *Router) get(key string) Provider {
 // classify calls the classifier provider (or primary) to determine if the message
 // requires deep reasoning. Returns false on any error.
 func (r *Router) classify(ctx context.Context, text string) bool {
+	r.mu.RLock()
 	classifierKey := r.cfg.Classifier
+	primaryKey := r.cfg.Primary
+	r.mu.RUnlock()
+
 	if classifierKey == "" {
-		classifierKey = r.cfg.Primary
+		classifierKey = primaryKey
 	}
 	provider := r.get(classifierKey)
 	if provider == nil {

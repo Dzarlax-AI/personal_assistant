@@ -41,14 +41,14 @@ type ModelConfig struct {
 }
 
 type ModelsConfig struct {
-	Default    ModelConfig `yaml:"default"`
-	Reasoner   ModelConfig `yaml:"reasoner"`
-	FlashLite  ModelConfig `yaml:"flash_lite"`
-	Multimodal ModelConfig `yaml:"multimodal"`
-	Embedding  ModelConfig `yaml:"embedding"`
-	QwenFlash  ModelConfig `yaml:"qwen_flash"`
-	Qwen122b   ModelConfig `yaml:"qwen_122b"`
-	QwenMax    ModelConfig `yaml:"qwen_max"`
+	DeepSeek        ModelConfig `yaml:"deepseek"`
+	DeepSeekR1      ModelConfig `yaml:"deepseek-r1"`
+	GeminiFlashLite ModelConfig `yaml:"gemini-flash-lite"`
+	GeminiFlash     ModelConfig `yaml:"gemini-flash"`
+	Embedding       ModelConfig `yaml:"embedding"`
+	QwenFlash       ModelConfig `yaml:"qwen-flash"`
+	QwenPlus        ModelConfig `yaml:"qwen3.5-plus"`
+	QwenMax         ModelConfig `yaml:"qwen-max"`
 }
 
 type RoutingConfig struct {

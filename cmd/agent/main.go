@@ -47,7 +47,7 @@ func main() {
 	}
 
 	// Primary (required)
-	primary, err := llm.NewDeepSeek(cfg.Models.Default)
+	primary, err := llm.NewDeepSeek(cfg.Models.DeepSeek)
 	if err != nil {
 		logger.Error("failed to init primary LLM", "err", err)
 		os.Exit(1)
@@ -55,39 +55,39 @@ func main() {
 	providers[cfg.Routing.Default] = primary
 
 	// Optional providers
-	if cfg.Models.Reasoner.APIKey != "" {
-		p, e := llm.NewDeepSeek(cfg.Models.Reasoner)
-		addProvider("reasoner", p, e)
+	if cfg.Models.DeepSeekR1.APIKey != "" {
+		p, e := llm.NewDeepSeek(cfg.Models.DeepSeekR1)
+		addProvider("deepseek-r1", p, e)
 	}
-	if cfg.Models.FlashLite.APIKey != "" {
-		p, e := llm.NewGemini(cfg.Models.FlashLite)
-		addProvider("flash_lite", p, e)
+	if cfg.Models.GeminiFlashLite.APIKey != "" {
+		p, e := llm.NewGemini(cfg.Models.GeminiFlashLite)
+		addProvider("gemini-flash-lite", p, e)
 	}
-	if cfg.Models.Multimodal.APIKey != "" {
-		p, e := llm.NewGeminiMultimodal(cfg.Models.Multimodal)
-		addProvider("multimodal", p, e)
+	if cfg.Models.GeminiFlash.APIKey != "" {
+		p, e := llm.NewGeminiMultimodal(cfg.Models.GeminiFlash)
+		addProvider("gemini-flash", p, e)
 	}
 	if cfg.Models.QwenFlash.APIKey != "" {
 		p, e := llm.NewQwen(cfg.Models.QwenFlash)
-		addProvider("qwen_flash", p, e)
+		addProvider("qwen-flash", p, e)
 	}
-	if cfg.Models.Qwen122b.APIKey != "" {
-		p, e := llm.NewQwen(cfg.Models.Qwen122b)
-		addProvider("qwen_122b", p, e)
+	if cfg.Models.QwenPlus.APIKey != "" {
+		p, e := llm.NewQwen(cfg.Models.QwenPlus)
+		addProvider("qwen3.5-plus", p, e)
 	}
 	if cfg.Models.QwenMax.APIKey != "" {
 		p, e := llm.NewQwen(cfg.Models.QwenMax)
-		addProvider("qwen_max", p, e)
+		addProvider("qwen-max", p, e)
 	}
 
 	// Default role keys if not specified
 	multimodalKey := cfg.Routing.Multimodal
 	if multimodalKey == "" {
-		multimodalKey = "multimodal"
+		multimodalKey = "gemini-flash"
 	}
 	reasonerKey := cfg.Routing.Reasoner
 	if reasonerKey == "" {
-		reasonerKey = "reasoner"
+		reasonerKey = "deepseek-r1"
 	}
 
 	router := llm.NewRouter(providers, llm.RouterConfig{
@@ -98,6 +98,19 @@ func main() {
 		Classifier:       cfg.Routing.Classifier,
 		ClassifierMinLen: cfg.Routing.ClassifierMinLength,
 	})
+
+	// Warn about routing roles that reference missing providers
+	for role, model := range map[string]string{
+		"fallback":   cfg.Routing.Fallback,
+		"multimodal": multimodalKey,
+		"reasoner":   reasonerKey,
+		"classifier": cfg.Routing.Classifier,
+	} {
+		if model != "" && providers[model] == nil {
+			logger.Warn("routing role references unconfigured provider (role will be skipped)",
+				"role", role, "model", model)
+		}
+	}
 
 	// Init store (SQLite if data dir exists, otherwise memory)
 	var s store.Store
@@ -113,6 +126,12 @@ func main() {
 		}
 	} else {
 		s = store.NewMemory()
+	}
+
+	// Persist routing overrides across restarts
+	router.SetPersistPath("config/routing.json")
+	if err := router.LoadPersistedOverrides(); err != nil {
+		logger.Warn("failed to load routing overrides", "err", err)
 	}
 
 	// Init compacter (uses primary model for summarization)
@@ -150,6 +169,7 @@ func main() {
 	defer stop()
 
 	logger.Info("agent started", "model", router.Name(), "providers", len(providers), "mcp_servers", len(mcpServers))
+	handler.NotifyMissingRouting()
 	handler.Start(ctx)
 	logger.Info("agent stopped")
 }

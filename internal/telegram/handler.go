@@ -101,6 +101,11 @@ func (h *Handler) Start(ctx context.Context) {
 }
 
 func (h *Handler) handleUpdate(update tgbotapi.Update) {
+	if update.CallbackQuery != nil {
+		h.handleCallbackQuery(update.CallbackQuery)
+		return
+	}
+
 	if update.Message == nil {
 		return
 	}
@@ -412,6 +417,12 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				h.send(chatID, fmt.Sprintf("Model: `%s`", escapeMarkdown(h.agent.ModelName())))
 			}
 		}
+	case "routing":
+		cfg := h.agent.GetRouting()
+		msg := tgbotapi.NewMessage(chatID, routingMenuText(cfg))
+		msg.ParseMode = tgbotapi.ModeMarkdownV2
+		msg.ReplyMarkup = routingMenuKeyboard(cfg)
+		h.bot.Send(msg) //nolint:errcheck
 	case "tools":
 		h.handleToolsCommand(chatID)
 	default:
@@ -502,11 +513,211 @@ func (h *Handler) sendTypingLoop(chatID int64, ctx context.Context) {
 	}
 }
 
+// --- Routing inline keyboard ---
+
+func routingMenuText(cfg llm.RouterConfig) string {
+	classifierStatus := "off"
+	if cfg.ClassifierMinLen > 0 {
+		classifierStatus = fmt.Sprintf("min %d chars", cfg.ClassifierMinLen)
+	}
+	return fmt.Sprintf(
+		"⚙️ *Routing Configuration*\n\n"+
+			"Primary: `%s`\n"+
+			"Fallback: `%s`\n"+
+			"Reasoner: `%s`\n"+
+			"Classifier: `%s` \\(%s\\)\n"+
+			"Multimodal: `%s`",
+		escapeMarkdown(cfg.Primary),
+		escapeMarkdown(cfg.Fallback),
+		escapeMarkdown(cfg.Reasoner),
+		escapeMarkdown(cfg.Classifier),
+		classifierStatus,
+		escapeMarkdown(cfg.Multimodal),
+	)
+}
+
+func routingMenuKeyboard(cfg llm.RouterConfig) tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Primary: "+cfg.Primary, "rt:role:primary"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Fallback: "+cfg.Fallback, "rt:role:fallback"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Reasoner: "+cfg.Reasoner, "rt:role:reasoner"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Classifier: "+cfg.Classifier, "rt:role:classifier"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Multimodal: "+cfg.Multimodal, "rt:role:multimodal"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Classifier threshold", "rt:min"),
+		),
+	)
+}
+
+func roleMenuKeyboard(role, current string, models []string) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+	var row []tgbotapi.InlineKeyboardButton
+	for i, m := range models {
+		label := m
+		if m == current {
+			label = "✓ " + m
+		}
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, "rt:set:"+role+":"+m))
+		if len(row) == 2 || i == len(models)-1 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("← Back", "rt:menu"),
+	))
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func minLenMenuKeyboard(current int) tgbotapi.InlineKeyboardMarkup {
+	options := []int{0, 50, 100, 200, 500}
+	labels := []string{"Off (0)", "50", "100", "200", "500"}
+	var row []tgbotapi.InlineKeyboardButton
+	for i, v := range options {
+		label := labels[i]
+		if v == current {
+			label = "✓ " + label
+		}
+		row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, fmt.Sprintf("rt:min:%d", v)))
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(
+		row,
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("← Back", "rt:menu"),
+		),
+	)
+}
+
+func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
+	// Only owner can interact
+	if q.From == nil || q.From.ID != h.ownerID {
+		h.bot.Request(tgbotapi.NewCallback(q.ID, "Unauthorized")) //nolint:errcheck
+		return
+	}
+
+	h.bot.Request(tgbotapi.NewCallback(q.ID, "")) //nolint:errcheck
+
+	data := q.Data
+	chatID := q.Message.Chat.ID
+	msgID := q.Message.MessageID
+
+	editText := func(text string, kb tgbotapi.InlineKeyboardMarkup) {
+		edit := tgbotapi.NewEditMessageText(chatID, msgID, text)
+		edit.ParseMode = tgbotapi.ModeMarkdownV2
+		edit.ReplyMarkup = &kb
+		h.bot.Send(edit) //nolint:errcheck
+	}
+
+	switch {
+	case data == "rt:menu":
+		cfg := h.agent.GetRouting()
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+
+	case strings.HasPrefix(data, "rt:role:"):
+		role := strings.TrimPrefix(data, "rt:role:")
+		cfg := h.agent.GetRouting()
+		current := roleValue(cfg, role)
+		models := h.agent.ListModels()
+		kb := roleMenuKeyboard(role, current, models)
+		edit := tgbotapi.NewEditMessageText(chatID, msgID,
+			fmt.Sprintf("⚙️ *Select model for* `%s`\\:", escapeMarkdown(role)))
+		edit.ParseMode = tgbotapi.ModeMarkdownV2
+		edit.ReplyMarkup = &kb
+		h.bot.Send(edit) //nolint:errcheck
+
+	case strings.HasPrefix(data, "rt:set:"):
+		// rt:set:<role>:<model>
+		rest := strings.TrimPrefix(data, "rt:set:")
+		idx := strings.Index(rest, ":")
+		if idx < 0 {
+			return
+		}
+		role, model := rest[:idx], rest[idx+1:]
+		if err := h.agent.SetRoutingRole(role, model); err != nil {
+			h.bot.Request(tgbotapi.NewCallback(q.ID, "Error: "+err.Error())) //nolint:errcheck
+			return
+		}
+		cfg := h.agent.GetRouting()
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+
+	case data == "rt:min":
+		cfg := h.agent.GetRouting()
+		edit := tgbotapi.NewEditMessageText(chatID, msgID,
+			"⚙️ *Classifier threshold*\n\nMinimum message length to run classifier \\(0 \\= disabled\\)\\:")
+		edit.ParseMode = tgbotapi.ModeMarkdownV2
+		kb := minLenMenuKeyboard(cfg.ClassifierMinLen)
+		edit.ReplyMarkup = &kb
+		h.bot.Send(edit) //nolint:errcheck
+
+	case strings.HasPrefix(data, "rt:min:"):
+		var n int
+		fmt.Sscanf(strings.TrimPrefix(data, "rt:min:"), "%d", &n)
+		h.agent.SetClassifierMinLen(n)
+		cfg := h.agent.GetRouting()
+		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
+	}
+}
+
+// NotifyMissingRouting sends a Telegram message to the owner for each routing role
+// that references a provider not present in the providers map.
+func (h *Handler) NotifyMissingRouting() {
+	if h.ownerID == 0 {
+		return
+	}
+	cfg := h.agent.GetRouting()
+	available := make(map[string]bool)
+	for _, m := range h.agent.ListModels() {
+		available[m] = true
+	}
+
+	roles := []struct{ name, model string }{
+		{"fallback", cfg.Fallback},
+		{"reasoner", cfg.Reasoner},
+		{"classifier", cfg.Classifier},
+		{"multimodal", cfg.Multimodal},
+	}
+	for _, r := range roles {
+		if r.model != "" && !available[r.model] {
+			text := fmt.Sprintf(
+				"⚠️ *Routing*: role `%s` — model `%s` is not available\\.\n\nSelect a replacement:",
+				escapeMarkdown(r.name), escapeMarkdown(r.model),
+			)
+			msg := tgbotapi.NewMessage(h.ownerID, text)
+			msg.ParseMode = tgbotapi.ModeMarkdownV2
+			kb := roleMenuKeyboard(r.name, "", h.agent.ListModels())
+			msg.ReplyMarkup = kb
+			h.bot.Send(msg) //nolint:errcheck
+		}
+	}
+}
+
+// roleValue returns the current model name for a given routing role.
+func roleValue(cfg llm.RouterConfig, role string) string {
+	switch role {
+	case "primary":
+		return cfg.Primary
+	case "fallback":
+		return cfg.Fallback
+	case "reasoner":
+		return cfg.Reasoner
+	case "classifier":
+		return cfg.Classifier
+	case "multimodal":
+		return cfg.Multimodal
+	}
+	return ""
+}
+
 func registerCommands(bot *tgbotapi.BotAPI) error {
 	commands := []tgbotapi.BotCommand{
 		{Command: "clear", Description: "Reset conversation context"},
 		{Command: "compact", Description: "Compress history (summarise)"},
 		{Command: "model", Description: "Show / switch model"},
+		{Command: "routing", Description: "Configure routing (inline UI)"},
 		{Command: "tools", Description: "List connected MCP tools"},
 		{Command: "help", Description: "Help"},
 	}

@@ -120,6 +120,18 @@ func (a *Agent) ListModels() []string {
 	return a.router.ProviderNames()
 }
 
+func (a *Agent) GetRouting() llm.RouterConfig {
+	return a.router.GetConfig()
+}
+
+func (a *Agent) SetRoutingRole(role, model string) error {
+	return a.router.SetRole(role, model)
+}
+
+func (a *Agent) SetClassifierMinLen(n int) {
+	a.router.SetClassifierMinLen(n)
+}
+
 type ToolInfo struct {
 	Name       string
 	ServerName string

@@ -4,7 +4,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 ## Features
 
-- **Multi-model routing** — DeepSeek Chat as primary; Gemini 3.1 Flash Lite as automatic fallback on errors or rate limits; DeepSeek Reasoner for complex tasks; Gemini 3 Flash Preview for images
+- **Multi-model routing** — DeepSeek Chat as primary; Gemini Flash Lite as automatic fallback on errors or rate limits; DeepSeek Reasoner for complex tasks; Gemini Flash for images; Qwen models optional
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
 - **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically
 - **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
@@ -21,6 +21,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - [Telegram Bot Token](https://t.me/BotFather)
 - [DeepSeek API key](https://platform.deepseek.com)
 - Gemini API key (optional — for fallback, image support, and tool filtering)
+- Qwen API key (optional — for classifier and additional models)
 
 ## Quick start (NAS / Pi / server)
 
@@ -107,25 +108,25 @@ telegram:
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
 models:
-  default:
+  deepseek:
     provider: deepseek
     model: deepseek-chat
     api_key: ${DEEPSEEK_API_KEY}
     max_tokens: 4096
     base_url: https://api.deepseek.com
-  reasoner:
+  deepseek-r1:
     provider: deepseek
     model: deepseek-reasoner
     api_key: ${DEEPSEEK_API_KEY}
     max_tokens: 8192
     base_url: https://api.deepseek.com
-  flash_lite:
+  gemini-flash-lite:
     provider: gemini
     model: gemini-3.1-flash-lite-preview
     api_key: ${GEMINI_API_KEY}
     max_tokens: 2048
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-  multimodal:
+  gemini-flash:
     provider: gemini
     model: gemini-3-flash-preview
     api_key: ${GEMINI_API_KEY}
@@ -135,11 +136,33 @@ models:
     provider: gemini
     model: gemini-embedding-001
     api_key: ${GEMINI_API_KEY}
+  qwen-flash:             # optional — used as classifier by default
+    provider: qwen
+    model: qwen3.5-flash
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 4096
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen3.5-plus:           # optional
+    provider: qwen
+    model: qwen3.5-122b-a10b
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 4096
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen-max:               # optional
+    provider: qwen
+    model: qwen3-max
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 8192
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 routing:
-  default: default
-  fallback: flash_lite
-  compaction_model: default
+  default: deepseek
+  fallback: gemini-flash-lite
+  multimodal: gemini-flash
+  reasoner: deepseek-r1
+  classifier: qwen-flash        # model for reasoning detection; omit to disable
+  classifier_min_length: 100    # min chars to run classifier; 0 = disabled
+  compaction_model: deepseek
 
 tool_filter:
   top_k: 20   # top-K tools selected per request via vector similarity; 0 = disabled
@@ -179,21 +202,25 @@ Plain text or Markdown injected as system prompt on every request.
 | `/clear` | Reset conversation context |
 | `/compact` | Summarise and compress history manually |
 | `/model` | Show current model |
-| `/model reasoner` | Switch to DeepSeek Reasoner |
-| `/model default` | Switch back to default |
+| `/model list` | List all available models |
+| `/model <name>` | Switch to a specific model (e.g. `/model deepseek-r1`) |
+| `/model reset` | Back to auto-routing |
+| `/routing` | Configure routing roles via inline keyboard |
 | `/tools` | List connected MCP tools grouped by server |
 | `/help` | Show help |
 
 ## LLM Routing
 
-| Priority | Provider | When |
+| Priority | Model | When |
 |---|---|---|
-| 1 | Gemini 3 Flash Preview | Message contains an image |
-| 2 | DeepSeek Reasoner | `/model reasoner` or LLM classifier detects complex reasoning needed |
-| 3 | DeepSeek Chat | Default |
-| 4 | Gemini 3.1 Flash Lite | Primary unavailable (5xx / 429 / network) |
+| 1 | `gemini-flash` | Message contains an image |
+| 2 | `deepseek-r1` | `/model deepseek-r1` override, or classifier detects complex reasoning |
+| 3 | `deepseek` | Default |
+| 4 | `gemini-flash-lite` | Primary unavailable (5xx / 429 / network) |
 
-The classifier is DeepSeek Chat itself — a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100), skipping short commands entirely. Set `classifier_min_length: 0` to disable auto-routing and rely on `/model reasoner` only.
+The classifier (`qwen-flash` by default) is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Set `classifier_min_length: 0` to disable. If the classifier model is not configured, auto-routing to reasoner is skipped.
+
+All routing roles can be changed live via `/routing` — an inline keyboard menu. Changes persist across restarts in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model and offers an inline picker to select a replacement.
 
 ## Session Management
 
@@ -214,10 +241,11 @@ flowchart TD
     Emb["Gemini Embedding\ngemini-embedding-001"]
 
     subgraph LLMs ["LLM Providers"]
-        DS["DeepSeek Chat"]
-        DSR["DeepSeek Reasoner"]
-        GL["Gemini Flash Lite"]
-        GM["Gemini Flash Preview"]
+        DS["deepseek"]
+        DSR["deepseek-r1"]
+        GL["gemini-flash-lite"]
+        GM["gemini-flash"]
+        QW["qwen-* (optional)"]
     end
 
     subgraph Servers ["MCP Servers"]
@@ -237,6 +265,7 @@ flowchart TD
     Router --> DSR
     Router --> GL
     Router --> GM
+    Router --> QW
     MCP --> S1
     MCP --> S2
     MCP --> S3
