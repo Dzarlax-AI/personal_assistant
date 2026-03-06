@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 
@@ -12,34 +13,34 @@ import (
 
 const classifierPrompt = `Does this message require deep step-by-step reasoning, mathematical proof, or complex multi-step analysis? Reply with only 'yes' or 'no'.`
 
-// Router selects the appropriate LLM provider based on context.
-// Primary → Fallback on 5xx/network error.
-// Reasoner → selected by LLM classifier or explicit /model command.
-// Multimodal → selected when message contains image parts.
-type Router struct {
-	primary    Provider
-	fallback   Provider // used if primary is unavailable
-	reasoner   Provider // used for complex reasoning
-	multimodal Provider // used when message contains images
-
-	classifierMinLen int // min message length to run classifier; 0 = disabled
-
-	mu       sync.RWMutex
-	override string // "reasoner" or "" (primary)
-
-	OnFallback func(from, to string) // optional: called when fallback is triggered
-
-	logger *slog.Logger
+// RouterConfig holds the keys into the providers map for special roles.
+type RouterConfig struct {
+	Primary          string
+	Fallback         string
+	Multimodal       string
+	Reasoner         string
+	Classifier       string // provider used for reasoning classification; falls back to Primary if empty
+	ClassifierMinLen int    // min rune length to run classifier; 0 = disabled
 }
 
-func NewRouter(primary, fallback, reasoner, multimodal Provider, classifierMinLen int) *Router {
+// Router selects the appropriate LLM provider based on context.
+// All providers are stored by name; special roles reference names from RouterConfig.
+type Router struct {
+	providers map[string]Provider
+	cfg       RouterConfig
+
+	mu       sync.RWMutex
+	override string // set via SetOverride; any key in providers, or "" for auto
+
+	OnFallback func(from, to string)
+	logger     *slog.Logger
+}
+
+func NewRouter(providers map[string]Provider, cfg RouterConfig) *Router {
 	return &Router{
-		primary:          primary,
-		fallback:         fallback,
-		reasoner:         reasoner,
-		multimodal:       multimodal,
-		classifierMinLen: classifierMinLen,
-		logger:           slog.Default(),
+		providers: providers,
+		cfg:       cfg,
+		logger:    slog.Default(),
 	}
 }
 
@@ -47,62 +48,109 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 	provider := r.pick(ctx, messages)
 
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
-	if err != nil && r.fallback != nil && provider != r.fallback && isUnavailable(err) {
-		if r.OnFallback != nil {
-			r.OnFallback(provider.Name(), r.fallback.Name())
+	if err != nil && isUnavailable(err) {
+		if fallback := r.get(r.cfg.Fallback); fallback != nil && fallback != provider {
+			if r.OnFallback != nil {
+				r.OnFallback(provider.Name(), fallback.Name())
+			}
+			resp, err = fallback.Chat(ctx, messages, systemPrompt, tools)
 		}
-		resp, err = r.fallback.Chat(ctx, messages, systemPrompt, tools)
 	}
 	return resp, err
 }
 
+// Name returns the name of the currently active provider (respecting override).
 func (r *Router) Name() string {
 	return r.pick(context.Background(), nil).Name()
 }
 
-func (r *Router) SetOverride(model string) {
+// SetOverride sets a named model override. Pass "" to clear. Returns error if name is unknown.
+func (r *Router) SetOverride(name string) error {
+	if name != "" {
+		if _, ok := r.providers[name]; !ok {
+			return errors.New("unknown model: " + name)
+		}
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.override = model
+	r.override = name
+	r.mu.Unlock()
+	return nil
 }
 
+// GetOverride returns the current override name (empty = auto).
 func (r *Router) GetOverride() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.override
 }
 
+// ProviderNames returns sorted list of all available provider names.
+func (r *Router) ProviderNames() []string {
+	names := make([]string, 0, len(r.providers))
+	for k := range r.providers {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (r *Router) pick(ctx context.Context, messages []Message) Provider {
+	// Multimodal takes priority — only vision-capable models support image parts
+	if p := r.get(r.cfg.Multimodal); p != nil && hasMultimodalContent(messages) {
+		return p
+	}
+
 	r.mu.RLock()
 	override := r.override
 	r.mu.RUnlock()
 
-	// Multimodal takes priority — DeepSeek doesn't support vision
-	if r.multimodal != nil && hasMultimodalContent(messages) {
-		return r.multimodal
-	}
-
-	if override == "reasoner" && r.reasoner != nil {
-		return r.reasoner
+	if override != "" {
+		if p := r.get(override); p != nil {
+			return p
+		}
 	}
 
 	// Classifier-based routing to reasoner
-	if r.reasoner != nil && r.classifierMinLen > 0 {
-		if text := lastUserText(messages); len([]rune(text)) >= r.classifierMinLen {
-			if r.classify(ctx, text) {
-				return r.reasoner
+	if r.cfg.ClassifierMinLen > 0 {
+		if p := r.get(r.cfg.Reasoner); p != nil {
+			if text := lastUserText(messages); len([]rune(text)) >= r.cfg.ClassifierMinLen {
+				if r.classify(ctx, text) {
+					return p
+				}
 			}
 		}
 	}
 
-	return r.primary
+	if p := r.get(r.cfg.Primary); p != nil {
+		return p
+	}
+	// Should never happen if config is valid
+	for _, p := range r.providers {
+		return p
+	}
+	return nil
 }
 
-// classify calls the primary LLM with a minimal prompt to determine
-// if the message requires deep reasoning. Returns false on any error.
+func (r *Router) get(key string) Provider {
+	if key == "" {
+		return nil
+	}
+	return r.providers[key]
+}
+
+// classify calls the classifier provider (or primary) to determine if the message
+// requires deep reasoning. Returns false on any error.
 func (r *Router) classify(ctx context.Context, text string) bool {
+	classifierKey := r.cfg.Classifier
+	if classifierKey == "" {
+		classifierKey = r.cfg.Primary
+	}
+	provider := r.get(classifierKey)
+	if provider == nil {
+		return false
+	}
 	msgs := []Message{{Role: "user", Content: text}}
-	resp, err := r.primary.Chat(ctx, msgs, classifierPrompt, nil)
+	resp, err := provider.Chat(ctx, msgs, classifierPrompt, nil)
 	if err != nil {
 		r.logger.Warn("classifier call failed, using primary", "err", err)
 		return false

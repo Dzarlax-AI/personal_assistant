@@ -104,8 +104,8 @@ func (a *Agent) Compact(ctx context.Context, chatID int64) error {
 	return a.compacter.Compact(ctx, chatID, a.store)
 }
 
-func (a *Agent) SetModel(override string) {
-	a.router.SetOverride(override)
+func (a *Agent) SetModel(override string) error {
+	return a.router.SetOverride(override)
 }
 
 func (a *Agent) ModelName() string {
@@ -114,6 +114,10 @@ func (a *Agent) ModelName() string {
 
 func (a *Agent) ModelOverride() string {
 	return a.router.GetOverride()
+}
+
+func (a *Agent) ListModels() []string {
+	return a.router.ProviderNames()
 }
 
 type ToolInfo struct {

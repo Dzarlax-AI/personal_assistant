@@ -33,11 +33,30 @@ models:
     provider: gemini
     model: gemini-embedding-001
     api_key: ${GEMINI_API_KEY}
+  qwen_flash:
+    provider: qwen
+    model: qwen3.5-flash
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 1
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen_122b:
+    provider: qwen
+    model: qwen3.5-122b-a10b
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 4096
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  qwen_max:
+    provider: qwen
+    model: qwen3-max
+    api_key: ${QWEN_API_KEY}
+    max_tokens: 8192
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 routing:
   default: default
   fallback: flash_lite
   compaction_model: default
+  classifier: qwen_flash
   classifier_min_length: 100
 
 tool_filter:

@@ -46,11 +46,17 @@ type ModelsConfig struct {
 	FlashLite  ModelConfig `yaml:"flash_lite"`
 	Multimodal ModelConfig `yaml:"multimodal"`
 	Embedding  ModelConfig `yaml:"embedding"`
+	QwenFlash  ModelConfig `yaml:"qwen_flash"`
+	Qwen122b   ModelConfig `yaml:"qwen_122b"`
+	QwenMax    ModelConfig `yaml:"qwen_max"`
 }
 
 type RoutingConfig struct {
 	Default             string `yaml:"default"`
 	Fallback            string `yaml:"fallback"`
+	Multimodal          string `yaml:"multimodal"`
+	Reasoner            string `yaml:"reasoner"`
+	Classifier          string `yaml:"classifier"`            // model for reasoning classifier; empty = use primary
 	CompactionModel     string `yaml:"compaction_model"`
 	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = disabled
 }

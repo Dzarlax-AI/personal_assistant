@@ -348,7 +348,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"Model: `%s`\n\n"+
 				"/clear — reset context\n"+
 				"/compact — compress history\n"+
-				"/model \\[default\\|reasoner\\] — switch model\n"+
+				"/model list — available models\n"+
 				"/tools — available tools\n"+
 				"/help — help",
 			h.agent.ModelName(),
@@ -359,8 +359,9 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"/clear — reset conversation context\n"+
 				"/compact — compress history \\(summarise\\)\n"+
 				"/model — show current model\n"+
-				"/model default — switch to default\n"+
-				"/model reasoner — switch to reasoner\n"+
+				"/model list — available models\n"+
+				"/model <name> — switch model\n"+
+				"/model reset — back to auto\\-routing\n"+
 				"/tools — list MCP tools\n"+
 				"/help — this help\n\n"+
 				"*Model:* `%s`\n"+
@@ -382,18 +383,34 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		switch arg {
 		case "":
 			override := h.agent.ModelOverride()
-			if override == "" {
-				override = "default"
+			mode := override
+			if mode == "" {
+				mode = "auto"
 			}
-			h.send(chatID, fmt.Sprintf("Current model: `%s` \\(mode: %s\\)", h.agent.ModelName(), override))
+			h.send(chatID, fmt.Sprintf("Model: `%s` \\(override: %s\\)\n\n/model list — available models", h.agent.ModelName(), escapeMarkdown(mode)))
+		case "list":
+			names := h.agent.ListModels()
+			var sb strings.Builder
+			sb.WriteString("*Available models:*\n")
+			for _, n := range names {
+				sb.WriteString("  `" + escapeMarkdown(n) + "`\n")
+			}
+			sb.WriteString("\nUse `/model <name>` to switch\\.")
+			h.send(chatID, sb.String())
 		case "default", "reset":
-			h.agent.SetModel("")
-			h.send(chatID, fmt.Sprintf("Model: `%s`", h.agent.ModelName()))
-		case "reasoner":
-			h.agent.SetModel("reasoner")
-			h.send(chatID, fmt.Sprintf("Model: `%s`", h.agent.ModelName()))
+			h.agent.SetModel("") //nolint:errcheck
+			h.send(chatID, fmt.Sprintf("Model: `%s` \\(auto\\)", h.agent.ModelName()))
 		default:
-			h.send(chatID, "Available modes: `default`, `reasoner`")
+			if err := h.agent.SetModel(arg); err != nil {
+				names := h.agent.ListModels()
+				escaped := make([]string, len(names))
+				for i, n := range names {
+					escaped[i] = "`" + escapeMarkdown(n) + "`"
+				}
+				h.send(chatID, "Unknown model\\. Available: "+strings.Join(escaped, ", "))
+			} else {
+				h.send(chatID, fmt.Sprintf("Model: `%s`", escapeMarkdown(h.agent.ModelName())))
+			}
 		}
 	case "tools":
 		h.handleToolsCommand(chatID)
@@ -520,6 +537,18 @@ func (h *Handler) handleToolsCommand(chatID int64) {
 		}
 	}
 	h.sendPlain(chatID, sb.String())
+}
+
+// escapeMarkdown escapes special characters for Telegram MarkdownV2.
+func escapeMarkdown(s string) string {
+	replacer := strings.NewReplacer(
+		"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]",
+		"(", "\\(", ")", "\\)", "~", "\\~", "`", "\\`",
+		">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
+		"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}",
+		".", "\\.", "!", "\\!",
+	)
+	return replacer.Replace(s)
 }
 
 func (h *Handler) notifyOwner(msg *tgbotapi.Message) {

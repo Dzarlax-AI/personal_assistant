@@ -35,38 +35,69 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Init LLM providers
+	// Build providers map — all named LLM providers available for routing and /model switching.
+	providers := make(map[string]llm.Provider)
+
+	addProvider := func(key string, p llm.Provider, e error) {
+		if e != nil {
+			logger.Warn("failed to init LLM provider", "key", key, "err", e)
+			return
+		}
+		providers[key] = p
+	}
+
+	// Primary (required)
 	primary, err := llm.NewDeepSeek(cfg.Models.Default)
 	if err != nil {
 		logger.Error("failed to init primary LLM", "err", err)
 		os.Exit(1)
 	}
+	providers[cfg.Routing.Default] = primary
 
-	var fallback llm.Provider
-	if cfg.Models.FlashLite.APIKey != "" {
-		fallback, err = llm.NewGemini(cfg.Models.FlashLite)
-		if err != nil {
-			logger.Warn("failed to init fallback LLM", "err", err)
-		}
-	}
-
-	var reasoner llm.Provider
+	// Optional providers
 	if cfg.Models.Reasoner.APIKey != "" {
-		reasoner, err = llm.NewDeepSeek(cfg.Models.Reasoner)
-		if err != nil {
-			logger.Warn("failed to init reasoner LLM", "err", err)
-		}
+		p, e := llm.NewDeepSeek(cfg.Models.Reasoner)
+		addProvider("reasoner", p, e)
 	}
-
-	var multimodal llm.Provider
+	if cfg.Models.FlashLite.APIKey != "" {
+		p, e := llm.NewGemini(cfg.Models.FlashLite)
+		addProvider("flash_lite", p, e)
+	}
 	if cfg.Models.Multimodal.APIKey != "" {
-		multimodal, err = llm.NewGeminiMultimodal(cfg.Models.Multimodal)
-		if err != nil {
-			logger.Warn("failed to init multimodal LLM", "err", err)
-		}
+		p, e := llm.NewGeminiMultimodal(cfg.Models.Multimodal)
+		addProvider("multimodal", p, e)
+	}
+	if cfg.Models.QwenFlash.APIKey != "" {
+		p, e := llm.NewQwen(cfg.Models.QwenFlash)
+		addProvider("qwen_flash", p, e)
+	}
+	if cfg.Models.Qwen122b.APIKey != "" {
+		p, e := llm.NewQwen(cfg.Models.Qwen122b)
+		addProvider("qwen_122b", p, e)
+	}
+	if cfg.Models.QwenMax.APIKey != "" {
+		p, e := llm.NewQwen(cfg.Models.QwenMax)
+		addProvider("qwen_max", p, e)
 	}
 
-	router := llm.NewRouter(primary, fallback, reasoner, multimodal, cfg.Routing.ClassifierMinLength)
+	// Default role keys if not specified
+	multimodalKey := cfg.Routing.Multimodal
+	if multimodalKey == "" {
+		multimodalKey = "multimodal"
+	}
+	reasonerKey := cfg.Routing.Reasoner
+	if reasonerKey == "" {
+		reasonerKey = "reasoner"
+	}
+
+	router := llm.NewRouter(providers, llm.RouterConfig{
+		Primary:          cfg.Routing.Default,
+		Fallback:         cfg.Routing.Fallback,
+		Multimodal:       multimodalKey,
+		Reasoner:         reasonerKey,
+		Classifier:       cfg.Routing.Classifier,
+		ClassifierMinLen: cfg.Routing.ClassifierMinLength,
+	})
 
 	// Init store (SQLite if data dir exists, otherwise memory)
 	var s store.Store
@@ -118,7 +149,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("agent started", "model", router.Name(), "mcp_servers", len(mcpServers))
+	logger.Info("agent started", "model", router.Name(), "providers", len(providers), "mcp_servers", len(mcpServers))
 	handler.Start(ctx)
 	logger.Info("agent stopped")
 }
