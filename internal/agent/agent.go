@@ -30,6 +30,7 @@ type Agent struct {
 	store     store.Store
 	mcp       *mcp.Client
 	compacter *Compacter
+	cache     *ResponseCache
 	sysPrompt string
 	logger    *slog.Logger
 }
@@ -40,6 +41,7 @@ func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Co
 		store:     s,
 		mcp:       mcpClient,
 		compacter: compacter,
+		cache:     newResponseCache(),
 		sysPrompt: sysPrompt,
 		logger:    logger,
 	}
@@ -67,6 +69,13 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
 
+	// Check response cache before calling the LLM.
+	if cached, ok := a.cache.Get(chatID, queryEmb); ok {
+		a.logger.Info("cache hit", "chat_id", chatID)
+		a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: cached})
+		return cached, nil
+	}
+
 	for i := 0; i < maxToolIterations; i++ {
 		history := a.getHistory(chatID, queryEmb)
 
@@ -81,6 +90,10 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 
 		if len(resp.ToolCalls) == 0 {
 			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: resp.Content})
+			// Cache only pure direct responses (first iteration, no tool calls).
+			if i == 0 {
+				a.cache.Set(chatID, queryEmb, resp.Content)
+			}
 			return resp.Content, nil
 		}
 
@@ -163,6 +176,15 @@ func (a *Agent) GetStats(chatID int64) (store.ChatStats, bool) {
 		return store.ChatStats{}, false
 	}
 	return cs.GetStats(chatID), true
+}
+
+// EmbedText returns an embedding for text using the configured embedding model.
+// Returns nil, nil when embeddings are not configured.
+func (a *Agent) EmbedText(ctx context.Context, text string) ([]float32, error) {
+	if a.mcp == nil {
+		return nil, nil
+	}
+	return a.mcp.EmbedText(ctx, text)
 }
 
 func (a *Agent) ListTools() []ToolInfo {
