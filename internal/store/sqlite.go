@@ -255,7 +255,7 @@ func (s *SQLite) insertSessionBreak(chatID int64, reason string) {
 func (s *SQLite) GetAllActive(chatID int64) ([]MessageRow, error) {
 	lastReset := s.lastResetID(chatID)
 	rows, err := s.db.Query(`
-		SELECT id, role, content, parts, tool_calls, tool_call_id
+		SELECT id, role, content, parts, tool_calls, tool_call_id, embedding
 		FROM messages
 		WHERE chat_id = ? AND id > ? AND is_compacted = 0 AND is_reset = 0
 		ORDER BY id ASC`,
@@ -269,7 +269,8 @@ func (s *SQLite) GetAllActive(chatID int64) ([]MessageRow, error) {
 	for rows.Next() {
 		var row MessageRow
 		var partsJSON, tcJSON, tcID sql.NullString
-		if err := rows.Scan(&row.ID, &row.Message.Role, &row.Message.Content, &partsJSON, &tcJSON, &tcID); err != nil {
+		var embBlob []byte
+		if err := rows.Scan(&row.ID, &row.Message.Role, &row.Message.Content, &partsJSON, &tcJSON, &tcID, &embBlob); err != nil {
 			continue
 		}
 		if partsJSON.Valid && partsJSON.String != "" {
@@ -279,6 +280,9 @@ func (s *SQLite) GetAllActive(chatID int64) ([]MessageRow, error) {
 			json.Unmarshal([]byte(tcJSON.String), &row.Message.ToolCalls) //nolint:errcheck
 		}
 		row.Message.ToolCallID = tcID.String
+		if len(embBlob) > 0 {
+			row.Embedding = blobToFloats(embBlob)
+		}
 		result = append(result, row)
 	}
 	return result, rows.Err()

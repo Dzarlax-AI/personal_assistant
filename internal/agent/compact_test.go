@@ -106,3 +106,73 @@ func (m *mockCompactableStore) GetAllActive(_ int64) ([]store.MessageRow, error)
 }
 
 func (m *mockCompactableStore) GetStats(_ int64) store.ChatStats { return store.ChatStats{} }
+
+func TestClusterByEmbedding_SingleTurn(t *testing.T) {
+	rows := []store.MessageRow{
+		{ID: 1, Message: llm.Message{Role: "user", Content: "hi"}, Embedding: []float32{1, 0}},
+		{ID: 2, Message: llm.Message{Role: "assistant", Content: "hello"}},
+	}
+	clusters := clusterByEmbedding(rows, clusterSimilarityThreshold)
+	if len(clusters) != 1 {
+		t.Errorf("expected 1 cluster, got %d", len(clusters))
+	}
+}
+
+func TestClusterByEmbedding_SimilarTurnsInOneCluster(t *testing.T) {
+	// Two turns with nearly identical embeddings → one cluster
+	rows := []store.MessageRow{
+		{ID: 1, Message: llm.Message{Role: "user", Content: "question 1"}, Embedding: []float32{1, 0}},
+		{ID: 2, Message: llm.Message{Role: "assistant", Content: "answer 1"}},
+		{ID: 3, Message: llm.Message{Role: "user", Content: "question 2"}, Embedding: []float32{0.99, 0.14}},
+		{ID: 4, Message: llm.Message{Role: "assistant", Content: "answer 2"}},
+	}
+	clusters := clusterByEmbedding(rows, clusterSimilarityThreshold)
+	if len(clusters) != 1 {
+		t.Errorf("expected 1 cluster for similar embeddings, got %d", len(clusters))
+	}
+}
+
+func TestClusterByEmbedding_DissimilarTurnsSplitClusters(t *testing.T) {
+	// Two turns with orthogonal embeddings → two clusters
+	rows := []store.MessageRow{
+		{ID: 1, Message: llm.Message{Role: "user", Content: "topic A"}, Embedding: []float32{1, 0}},
+		{ID: 2, Message: llm.Message{Role: "assistant", Content: "answer A"}},
+		{ID: 3, Message: llm.Message{Role: "user", Content: "topic B"}, Embedding: []float32{0, 1}},
+		{ID: 4, Message: llm.Message{Role: "assistant", Content: "answer B"}},
+	}
+	clusters := clusterByEmbedding(rows, clusterSimilarityThreshold)
+	if len(clusters) != 2 {
+		t.Errorf("expected 2 clusters for orthogonal embeddings, got %d", len(clusters))
+	}
+	if len(clusters[0]) != 2 || len(clusters[1]) != 2 {
+		t.Errorf("expected each cluster to have 2 rows, got %d and %d", len(clusters[0]), len(clusters[1]))
+	}
+}
+
+func TestClusterByEmbedding_NoEmbeddingsOneCluster(t *testing.T) {
+	rows := []store.MessageRow{
+		{ID: 1, Message: llm.Message{Role: "user", Content: "no emb 1"}},
+		{ID: 2, Message: llm.Message{Role: "user", Content: "no emb 2"}},
+	}
+	clusters := clusterByEmbedding(rows, clusterSimilarityThreshold)
+	if len(clusters) != 1 {
+		t.Errorf("expected 1 cluster when no embeddings, got %d", len(clusters))
+	}
+}
+
+func TestHasEmbeddings(t *testing.T) {
+	noEmb := []store.MessageRow{
+		{Message: llm.Message{Role: "user"}},
+		{Message: llm.Message{Role: "assistant"}},
+	}
+	if hasEmbeddings(noEmb) {
+		t.Error("expected false for rows without embeddings")
+	}
+
+	withEmb := []store.MessageRow{
+		{Message: llm.Message{Role: "user"}, Embedding: []float32{1, 0}},
+	}
+	if !hasEmbeddings(withEmb) {
+		t.Error("expected true for row with embedding")
+	}
+}

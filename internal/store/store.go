@@ -23,8 +23,9 @@ type Store interface {
 
 // MessageRow wraps a message with its database ID (for compaction).
 type MessageRow struct {
-	ID      int64
-	Message llm.Message
+	ID        int64
+	Message   llm.Message
+	Embedding []float32 // nil if not stored; populated by GetAllActive when available
 }
 
 // CompactableStore extends Store with compaction support (implemented by SQLite).
