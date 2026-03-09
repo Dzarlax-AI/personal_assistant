@@ -19,10 +19,13 @@ import (
 )
 
 const (
-	maxMessageLen  = 4096
-	requestTimeout = 5 * time.Minute
-	forwardTTL     = 5 * time.Minute
-	batchTimeout   = 2 * time.Second
+	maxMessageLen     = 4096
+	requestTimeout    = 5 * time.Minute
+	forwardTTL        = 5 * time.Minute
+	batchTimeout      = 2 * time.Second
+	maxImagesPerBatch = 5
+	downloadTimeout   = 30 * time.Second
+	maxInputLen       = 50 * 1024 // 50 KB cap on incoming text
 )
 
 // forwardedContent holds a buffered forwarded message waiting for user follow-up.
@@ -35,8 +38,9 @@ type forwardedContent struct {
 
 // pendingBatch accumulates messages for a single chat during the debounce window.
 type pendingBatch struct {
-	msgs  []*tgbotapi.Message
-	timer *time.Timer
+	msgs    []*tgbotapi.Message
+	timer   *time.Timer
+	version int // incremented on each new message to detect stale timer callbacks
 }
 
 type Handler struct {
@@ -148,22 +152,50 @@ func (h *Handler) queueMessage(msg *tgbotapi.Message) {
 		h.batches[chatID] = b
 	}
 	b.msgs = append(b.msgs, msg)
+	b.version++
+	ver := b.version
 	if b.timer != nil {
 		b.timer.Stop()
 	}
 	b.timer = time.AfterFunc(batchTimeout, func() {
-		h.processBatch(chatID)
+		h.processBatch(chatID, ver)
 	})
 	h.batchMu.Unlock()
 }
 
-// processBatch merges all accumulated messages and sends them to the LLM as one request.
-func (h *Handler) processBatch(chatID int64) {
+// processBatch is called by the debounce timer. It verifies the version to
+// avoid processing a batch that was superseded by a newer message.
+func (h *Handler) processBatch(chatID int64, version int) {
 	h.batchMu.Lock()
 	b := h.batches[chatID]
+	if b == nil || b.version != version {
+		h.batchMu.Unlock()
+		return
+	}
 	delete(h.batches, chatID)
 	h.batchMu.Unlock()
 
+	h.runBatch(chatID, b)
+}
+
+// Drain flushes all pending batches synchronously. Call after stopping updates
+// to avoid losing messages queued but not yet fired by their timers.
+func (h *Handler) Drain() {
+	h.batchMu.Lock()
+	pending := h.batches
+	h.batches = make(map[int64]*pendingBatch)
+	h.batchMu.Unlock()
+
+	for chatID, b := range pending {
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+		h.runBatch(chatID, b)
+	}
+}
+
+// runBatch merges all accumulated messages and sends them to the LLM as one request.
+func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 	if b == nil || len(b.msgs) == 0 {
 		return
 	}
@@ -181,6 +213,11 @@ func (h *Handler) processBatch(chatID int64) {
 		}
 		text = appendTextLinks(text, msg.Entities, msg.CaptionEntities)
 
+		// If this message is a reply, prepend the quoted original so the LLM has context.
+		if msg.ReplyToMessage != nil && !isForward {
+			text = buildReplyQuote(msg.ReplyToMessage) + text
+		}
+
 		if isForward {
 			header := buildForwardHeader(msg)
 			entry := header
@@ -196,7 +233,7 @@ func (h *Handler) processBatch(chatID int64) {
 		}
 
 		// Download photo from any message in the batch (forwarded or not)
-		if msg.Photo != nil {
+		if msg.Photo != nil && len(imageParts) < maxImagesPerBatch {
 			photo := msg.Photo[len(msg.Photo)-1]
 			data, err := h.downloadFile(photo.FileID)
 			if err != nil {
@@ -241,6 +278,9 @@ func (h *Handler) processBatch(chatID int64) {
 
 	// Build the LLM message.
 	combined := strings.Join(textParts, "\n\n")
+	if len(combined) > maxInputLen {
+		combined = combined[:maxInputLen]
+	}
 	var userMsg llm.Message
 
 	if len(imageParts) > 0 {
@@ -325,6 +365,30 @@ func appendTextLinks(text string, entitySets ...[]tgbotapi.MessageEntity) string
 	return text + "\n" + strings.Join(links, "\n")
 }
 
+// buildReplyQuote formats the replied-to message as a quoted prefix so the LLM
+// understands what the user is responding to.
+func buildReplyQuote(reply *tgbotapi.Message) string {
+	text := reply.Text
+	if text == "" {
+		text = reply.Caption
+	}
+	if text == "" {
+		// replied to a photo/sticker/etc with no text
+		text = "[media]"
+	}
+	const maxQuoteLen = 300
+	if len([]rune(text)) > maxQuoteLen {
+		runes := []rune(text)
+		text = string(runes[:maxQuoteLen]) + "…"
+	}
+
+	sender := "bot"
+	if reply.From != nil && !reply.From.IsBot {
+		sender = "you"
+	}
+	return fmt.Sprintf("[Replying to %s: \"%s\"]\n", sender, text)
+}
+
 // buildForwardHeader builds a "[Forwarded from ...]" label from a forwarded message.
 func buildForwardHeader(msg *tgbotapi.Message) string {
 	switch {
@@ -363,6 +427,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 			"*Commands:*\n\n"+
 				"/clear — reset conversation context\n"+
 				"/compact — compress history \\(summarise\\)\n"+
+				"/stats — history size, model, last compact\n"+
 				"/model — show current model\n"+
 				"/model list — available models\n"+
 				"/model <name> — switch model\n"+
@@ -425,6 +490,8 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		h.bot.Send(msg) //nolint:errcheck
 	case "tools":
 		h.handleToolsCommand(chatID)
+	case "stats":
+		h.handleStatsCommand(chatID)
 	default:
 		h.send(chatID, "Unknown command\\. /help for help\\.")
 	}
@@ -436,7 +503,8 @@ func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 		return nil, err
 	}
 	url := file.Link(h.bot.Token)
-	resp, err := http.Get(url) //nolint:gosec
+	client := &http.Client{Timeout: downloadTimeout}
+	resp, err := client.Get(url) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
@@ -637,10 +705,13 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 			return
 		}
 		role, model := rest[:idx], rest[idx+1:]
+		h.logger.Info("routing change requested", "role", role, "model", model)
 		if err := h.agent.SetRoutingRole(role, model); err != nil {
+			h.logger.Warn("routing change failed", "role", role, "model", model, "err", err)
 			h.bot.Request(tgbotapi.NewCallback(q.ID, "Error: "+err.Error())) //nolint:errcheck
 			return
 		}
+		h.logger.Info("routing change applied", "role", role, "model", model)
 		cfg := h.agent.GetRouting()
 		editText(routingMenuText(cfg), routingMenuKeyboard(cfg))
 
@@ -719,6 +790,7 @@ func registerCommands(bot *tgbotapi.BotAPI) error {
 		{Command: "model", Description: "Show / switch model"},
 		{Command: "routing", Description: "Configure routing (inline UI)"},
 		{Command: "tools", Description: "List connected MCP tools"},
+		{Command: "stats", Description: "Show history size, model, last compact"},
 		{Command: "help", Description: "Help"},
 	}
 	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
@@ -748,6 +820,57 @@ func (h *Handler) handleToolsCommand(chatID int64) {
 		}
 	}
 	h.sendPlain(chatID, sb.String())
+}
+
+func (h *Handler) handleStatsCommand(chatID int64) {
+	model := h.agent.ModelName()
+	override := h.agent.ModelOverride()
+
+	var sb strings.Builder
+	sb.WriteString("*Stats*\n\n")
+	sb.WriteString(fmt.Sprintf("Model: `%s`", escapeMarkdown(model)))
+	if override != "" {
+		sb.WriteString(fmt.Sprintf(" \\(override: `%s`\\)", escapeMarkdown(override)))
+	} else {
+		sb.WriteString(" \\(auto\\)")
+	}
+	sb.WriteString("\n")
+
+	stats, ok := h.agent.GetStats(chatID)
+	if !ok {
+		sb.WriteString("\n_Stats not available \\(memory store\\)_")
+		h.send(chatID, sb.String())
+		return
+	}
+
+	sb.WriteString(fmt.Sprintf("\nHistory: *%d* messages / *%s*",
+		stats.ActiveMessages,
+		escapeMarkdown(formatBytes(stats.ActiveChars)),
+	))
+
+	if !stats.LastCompactAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("\nLast compact: %s", escapeMarkdown(stats.LastCompactAt.Format("2 Jan 2006, 15:04"))))
+	} else {
+		sb.WriteString("\nLast compact: _never_")
+	}
+
+	if !stats.LastMessageAt.IsZero() {
+		sb.WriteString(fmt.Sprintf("\nLast message: %s", escapeMarkdown(stats.LastMessageAt.Format("2 Jan 2006, 15:04"))))
+	}
+
+	h.send(chatID, sb.String())
+}
+
+// formatBytes formats a byte count as a human-readable string.
+func formatBytes(n int) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MB", float64(n)/1024/1024)
+	case n >= 1024:
+		return fmt.Sprintf("%.1f KB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // escapeMarkdown escapes special characters for Telegram MarkdownV2.
