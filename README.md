@@ -9,12 +9,13 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 - **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
 - **Image support** — send a photo (with or without caption) and it's routed automatically to the vision model
 - **Reply context** — replying to a bot message or your own message prepends the quoted text so the LLM has full context
-- **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically
+- **Forwarded messages** — forward any message (text, photo, link) to the bot, then ask your question; messages arriving within 2 s are batched automatically; when embeddings are configured and more than 3 messages are buffered, only the forwards most relevant to your question (cosine ≥ 0.25) are included — irrelevant topic noise is filtered out automatically
 - **Link extraction** — hidden hyperlinks (`text_link` entities) in forwarded messages are surfaced as plain URLs for the LLM
 - **MCP tool support** — connects to any MCP-compatible server (HTTP/SSE), same `mcp.json` format as Claude Desktop; per-server `allowTools`/`denyTools` filtering; vector similarity filtering selects only the most relevant tools per request
 - **Configurable embeddings** — shared embedding layer used for both tool filtering and conversation memory; supports Gemini (default), HuggingFace TEI, or any OpenAI-compatible endpoint
 - **Persistent memory** — SQLite-backed conversation history with automatic session management
 - **Token-based compaction** — auto-summarises old history when estimated token count exceeds threshold; images count as 1000 tokens each
+- **Embedding response cache** — identical or near-identical queries (cosine ≥ 0.97) return a cached response without calling the LLM; per-chat, 1-hour TTL, 200-entry capacity
 - **Rich formatting** — Markdown converted to Telegram HTML; responses ≥ 4096 chars sent as `response.md`
 - **Access control** — allowlist by chat ID + owner-only enforcement
 - **Date/time awareness** — current date and time injected into every request; timezone set via `TZ` env var
@@ -275,6 +276,7 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 - After **4 hours of inactivity**, a new session starts automatically — the last summary is carried over
 - `/clear` does a full reset with no carry-over
 - Compaction triggers when estimated token count exceeds **16 000 tokens** (images count as 1000 tokens each)
+- When embeddings are configured, old messages are **clustered by topic** (cosine similarity < 0.65 starts a new cluster) and each cluster is summarised separately — producing a more structured, topic-aware summary. Falls back to single-pass summarisation when embeddings are unavailable
 
 ## Companion MCP Servers
 
@@ -293,7 +295,8 @@ Configure them in `config/mcp.json`.
 flowchart TD
     User(["📱 Telegram"])
     Handler["Telegram Handler\n(debounce · reply chain · batch)"]
-    Agent["Agent\nagentic loop"]
+    FwdBuf["Forward Buffer\n(embed · relevance filter)"]
+    Agent["Agent\nagentic loop · response cache"]
     Router["LLM Router\n(primary · fallback · reasoner\nmultimodal · classifier)"]
     MCP["MCP Client"]
     Store[("SQLite\nconversations.db")]
@@ -302,6 +305,7 @@ flowchart TD
     subgraph Memory ["Semantic Memory"]
         SM["Within-session RAG\nlast 10 + top-20 by similarity"]
         CM["Cross-session search\ntop-5 snippets → system prompt"]
+        SC["Semantic compaction\ntopic clusters → per-cluster summary"]
     end
 
     subgraph LLMs ["LLM Providers"]
@@ -318,14 +322,19 @@ flowchart TD
         S3["..."]
     end
 
-    User -->|"text / photo / forward / reply"| Handler
+    User -->|"text / photo / reply"| Handler
+    User -->|"forwarded messages"| FwdBuf
+    FwdBuf <-->|"embed forwards"| Emb
+    FwdBuf -->|"relevant forwards only\ncosine ≥ 0.25"| Handler
     Handler --> Agent
     Agent <-->|"store + retrieve"| Store
     Store <-->|"embed messages"| Emb
     Store --> SM
     Store --> CM
+    Store --> SC
     SM -->|"context window"| Agent
     CM -->|"system prompt snippets"| Agent
+    Agent -->|"cache hit → skip LLM"| Agent
     Agent --> Router
     Agent -->|"query embed · top-K filter"| MCP
     MCP <-->|"embed tools at startup"| Emb

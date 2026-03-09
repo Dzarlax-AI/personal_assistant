@@ -79,7 +79,8 @@ flowchart LR
   4. Agentic loop: calls `getHistory` → `Router.Chat` → handles tool calls (max 5 iterations)
 - `getHistory(chatID, queryEmb)` — uses `SemanticStore.GetSemanticHistory(chatID, emb, 10, 20)` when embedding available; falls back to `GetHistory`
 - `GetStats(chatID) (store.ChatStats, bool)` — type-asserts store to `CompactableStore`
-- `compact.go` — token-based threshold: 16 000 estimated tokens. Fast pre-check at 32 000 chars. `EstimateTokens`: `len(Content)/4` + text parts `/4` + images `×1000`
+- `cache.go` — `ResponseCache`: in-memory LLM response cache keyed by query embedding. `Get(chatID, emb)` returns hit if cosine ≥ 0.97 and not expired. `Set(chatID, emb, response)` stores entry; evicts expired on write, then oldest if at capacity. TTL=1h, maxSize=200. Checked before LLM call; only pure direct responses (first iteration, no tool calls) are cached.
+- `compact.go` — token-based threshold: 16 000 estimated tokens. Fast pre-check at 32 000 chars. `EstimateTokens`: `len(Content)/4` + text parts `/4` + images `×1000`. **Semantic compaction**: `GetAllActive` now populates `MessageRow.Embedding`; if embeddings are present, `clusterByEmbedding` groups turns into topic clusters (greedy cosine, threshold 0.65) and each cluster is summarised separately — results joined with `---`. Falls back to single-pass when no embeddings or only one cluster.
 
 **`internal/telegram`** — Telegram Bot API handler.
 - `markdown.go` — Markdown → Telegram HTML converter. No external deps.
@@ -88,6 +89,7 @@ flowchart LR
   - **Race condition fix**: `version` counter on each batch; timer bails if version changed
   - **Reply chain**: `buildReplyQuote()` prepends `[Replying to: "..."]` (max 300 chars)
   - **Graceful shutdown**: `Drain()` atomically swaps batches map, flushes synchronously
+  - **Smart forward buffer**: forward-only batch → `bufferForwards()` embeds each entry via `agent.EmbedText` and stores `[]forwardEntry{text, emb}` with 5 min TTL. On follow-up question: question is embedded, `selectForwards()` scores buffered entries by cosine similarity and keeps those ≥ 0.25 (min 2 always included). Falls back to all entries when embeddings unavailable or ≤ 3 entries buffered.
   - `/routing` — inline keyboard for live routing changes; callback `rt:set:<role>:<model>` calls `agent.SetRoutingRole`; logs `routing change requested/applied`
   - `/stats` — calls `agent.GetStats`, formats stats message
   - `NotifyMissingRouting()` — startup check; sends inline model-picker for unconfigured routing roles
