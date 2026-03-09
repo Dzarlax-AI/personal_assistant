@@ -11,7 +11,9 @@ import (
 
 const (
 	compactionKeepLast      = 10
-	compactionCharThreshold = 60000 // ~20K tokens, practical threshold for daily use
+	compactionTokenThreshold = 16000 // trigger compaction at ~16K tokens
+	compactionCharPrecheck   = 32000 // cheap SQL char pre-check to skip token counting when far below threshold
+	imageTokenCost           = 1000  // approximate visual token cost per image
 )
 
 const compactionSystemPrompt = `Summarise the conversation history into a concise summary in the same language as the conversation.
@@ -28,12 +30,44 @@ func NewCompacter(provider llm.Provider) *Compacter {
 }
 
 // NeedsCompaction returns true if the conversation history should be compacted.
+// Uses a two-step check: cheap SQL char count as a pre-filter, then accurate
+// token estimation over the actual messages.
 func NeedsCompaction(s store.Store, chatID int64) bool {
 	cs, ok := s.(store.CompactableStore)
 	if !ok {
 		return false
 	}
-	return cs.ActiveCharCount(chatID) > compactionCharThreshold
+	// Fast path: if we're well below threshold even in chars, skip the full load.
+	if cs.ActiveCharCount(chatID) < compactionCharPrecheck {
+		return false
+	}
+	rows, err := cs.GetAllActive(chatID)
+	if err != nil {
+		return false
+	}
+	total := 0
+	for _, row := range rows {
+		total += EstimateTokens(row.Message)
+	}
+	return total > compactionTokenThreshold
+}
+
+// EstimateTokens returns a rough token count for a single message.
+// Heuristic: 1 token ≈ 4 bytes of UTF-8 text; each image costs ~1000 tokens.
+func EstimateTokens(msg llm.Message) int {
+	total := 0
+	if msg.Content != "" {
+		total += len(msg.Content) / 4
+	}
+	for _, p := range msg.Parts {
+		switch p.Type {
+		case "text":
+			total += len(p.Text) / 4
+		case "image_url":
+			total += imageTokenCost
+		}
+	}
+	return total
 }
 
 // Compact summarizes old messages and marks them as archived.
