@@ -17,4 +17,4 @@ docs/
 openspec/
 docs
 openspec
-.claudignore
+.claudignoreconfig/routing.json
