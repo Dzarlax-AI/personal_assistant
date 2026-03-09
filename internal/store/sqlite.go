@@ -2,9 +2,12 @@ package store
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,8 +51,9 @@ func NewSQLite(path string) (*SQLite, error) {
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
-	// Migration: add parts column for existing databases
-	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`) //nolint:errcheck
+	// Migrations for existing databases
+	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)     //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`) //nolint:errcheck
 	return &SQLite{db: db}, nil
 }
 
@@ -69,21 +73,9 @@ func (s *SQLite) GetHistory(chatID int64) []llm.Message {
 }
 
 func (s *SQLite) AddMessage(chatID int64, msg llm.Message) {
-	// Auto session break: if user sends a message after a long pause, start fresh
-	if msg.Role == "user" {
-		if last := s.lastMessageTime(chatID); !last.IsZero() && time.Since(last) > sessionIdleTimeout {
-			slog.Info("auto session break", "chat_id", chatID, "idle", time.Since(last).Round(time.Minute))
-			s.insertSessionBreak(chatID, "AUTO_SESSION_BREAK")
-		}
-	}
-
+	s.maybeSessionBreak(chatID, msg.Role)
 	tcJSON, tcID := encodeToolFields(msg)
-	var partsJSON sql.NullString
-	if len(msg.Parts) > 0 {
-		if b, err := json.Marshal(msg.Parts); err == nil {
-			partsJSON = sql.NullString{String: string(b), Valid: true}
-		}
-	}
+	partsJSON := encodePartsJSON(msg.Parts)
 	_, err := s.db.Exec(`
 		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id)
 		VALUES (?, ?, ?, ?, ?, ?)`,
@@ -91,6 +83,139 @@ func (s *SQLite) AddMessage(chatID int64, msg llm.Message) {
 	if err != nil {
 		slog.Error("sqlite AddMessage failed", "role", msg.Role, "err", err)
 	}
+}
+
+// AddMessageWithEmbedding stores msg together with its pre-computed embedding.
+// Only user messages need embeddings; other roles are stored with embedding=NULL.
+func (s *SQLite) AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32) {
+	s.maybeSessionBreak(chatID, msg.Role)
+	tcJSON, tcID := encodeToolFields(msg)
+	partsJSON := encodePartsJSON(msg.Parts)
+	var embBlob []byte
+	if len(emb) > 0 {
+		embBlob = floatsToBlob(emb)
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO messages (chat_id, role, content, parts, tool_calls, tool_call_id, embedding)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		chatID, msg.Role, msg.Content, partsJSON, tcJSON, tcID, embBlob)
+	if err != nil {
+		slog.Error("sqlite AddMessageWithEmbedding failed", "role", msg.Role, "err", err)
+	}
+}
+
+// maybeSessionBreak inserts a reset marker when a user message arrives after a long idle period.
+func (s *SQLite) maybeSessionBreak(chatID int64, role string) {
+	if role != "user" {
+		return
+	}
+	if last := s.lastMessageTime(chatID); !last.IsZero() && time.Since(last) > sessionIdleTimeout {
+		slog.Info("auto session break", "chat_id", chatID, "idle", time.Since(last).Round(time.Minute))
+		s.insertSessionBreak(chatID, "AUTO_SESSION_BREAK")
+	}
+}
+
+// GetSemanticHistory returns the last recentN messages unconditionally, plus the
+// top topK older conversational turns ranked by cosine similarity to queryEmb.
+// Results are in chronological order.
+func (s *SQLite) GetSemanticHistory(chatID int64, queryEmb []float32, recentN, topK int) []llm.Message {
+	lastReset := s.lastResetID(chatID)
+	rows, err := s.db.Query(`
+		SELECT id, role, content, parts, tool_calls, tool_call_id, embedding
+		FROM messages
+		WHERE chat_id = ? AND id > ? AND is_compacted = 0 AND is_reset = 0
+		ORDER BY id ASC`,
+		chatID, lastReset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type msgRow struct {
+		id  int64
+		msg llm.Message
+		emb []float32
+	}
+	var all []msgRow
+	for rows.Next() {
+		var r msgRow
+		var partsJSON, tcJSON, tcID sql.NullString
+		var embBlob []byte
+		if err := rows.Scan(&r.id, &r.msg.Role, &r.msg.Content, &partsJSON, &tcJSON, &tcID, &embBlob); err != nil {
+			continue
+		}
+		if partsJSON.Valid && partsJSON.String != "" {
+			json.Unmarshal([]byte(partsJSON.String), &r.msg.Parts) //nolint:errcheck
+		}
+		if tcJSON.Valid && tcJSON.String != "" {
+			json.Unmarshal([]byte(tcJSON.String), &r.msg.ToolCalls) //nolint:errcheck
+		}
+		r.msg.ToolCallID = tcID.String
+		if len(embBlob) > 0 {
+			r.emb = blobToFloats(embBlob)
+		}
+		all = append(all, r)
+	}
+
+	if len(all) <= recentN {
+		msgs := make([]llm.Message, len(all))
+		for i, r := range all {
+			msgs[i] = r.msg
+		}
+		return msgs
+	}
+
+	recentStart := len(all) - recentN
+	older := all[:recentStart]
+	recent := all[recentStart:]
+
+	// Group older messages into conversational turns.
+	// A turn begins at each user message and ends before the next one.
+	type turn struct {
+		rows  []msgRow
+		score float64
+	}
+	var turns []turn
+	var cur []msgRow
+	for _, r := range older {
+		if r.msg.Role == "user" && len(cur) > 0 {
+			turns = append(turns, turn{rows: cur})
+			cur = nil
+		}
+		cur = append(cur, r)
+	}
+	if len(cur) > 0 {
+		turns = append(turns, turn{rows: cur})
+	}
+
+	// Score each turn by the cosine similarity of its user message embedding.
+	for i := range turns {
+		for _, r := range turns[i].rows {
+			if r.msg.Role == "user" && len(r.emb) > 0 {
+				turns[i].score = cosineSimilarityF32(queryEmb, r.emb)
+				break
+			}
+		}
+	}
+
+	// Select top-K turns by score.
+	sort.Slice(turns, func(i, j int) bool { return turns[i].score > turns[j].score })
+	if len(turns) > topK {
+		turns = turns[:topK]
+	}
+	// Restore chronological order.
+	sort.Slice(turns, func(i, j int) bool { return turns[i].rows[0].id < turns[j].rows[0].id })
+
+	var result []llm.Message
+	for _, t := range turns {
+		for _, r := range t.rows {
+			result = append(result, r.msg)
+		}
+	}
+	for _, r := range recent {
+		result = append(result, r.msg)
+	}
+	return result
 }
 
 func (s *SQLite) lastMessageTime(chatID int64) time.Time {
@@ -183,6 +308,143 @@ func (s *SQLite) MarkCompacted(ids []int64) error {
 	return err
 }
 
+func (s *SQLite) GetStats(chatID int64) ChatStats {
+	lastReset := s.lastResetID(chatID)
+
+	var stats ChatStats
+
+	// Active message count and char size in current session
+	s.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0)
+		FROM messages
+		WHERE chat_id = ? AND id > ? AND is_compacted = 0 AND is_reset = 0`,
+		chatID, lastReset).Scan(&stats.ActiveMessages, &stats.ActiveChars)
+
+	// Last compaction timestamp
+	var lastCompact sql.NullString
+	s.db.QueryRow(`
+		SELECT MAX(created_at) FROM messages
+		WHERE chat_id = ? AND is_compacted = 1`,
+		chatID).Scan(&lastCompact)
+	if lastCompact.Valid && lastCompact.String != "" {
+		stats.LastCompactAt, _ = time.Parse("2006-01-02 15:04:05", lastCompact.String)
+	}
+
+	// Last message timestamp
+	var lastMsg sql.NullString
+	s.db.QueryRow(`
+		SELECT MAX(created_at) FROM messages
+		WHERE chat_id = ? AND is_reset = 0 AND role != 'system'`,
+		chatID).Scan(&lastMsg)
+	if lastMsg.Valid && lastMsg.String != "" {
+		stats.LastMessageAt, _ = time.Parse("2006-01-02 15:04:05", lastMsg.String)
+	}
+
+	return stats
+}
+
+// SearchAllSessions searches the entire message history (across all sessions) for
+// turns semantically similar to queryEmb. Turns from the current session are excluded.
+// Each result is a (date, userText, botText) snippet truncated for system-prompt injection.
+func (s *SQLite) SearchAllSessions(chatID int64, queryEmb []float32, topK int, minScore float64) []HistorySnippet {
+	lastReset := s.lastResetID(chatID)
+
+	rows, err := s.db.Query(`
+		SELECT id, role, content, created_at, embedding
+		FROM messages
+		WHERE chat_id = ? AND id <= ? AND is_compacted = 0 AND is_reset = 0
+		      AND role IN ('user','assistant') AND is_summary = 0
+		ORDER BY id ASC`,
+		chatID, lastReset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type rawRow struct {
+		id        int64
+		role      string
+		content   string
+		createdAt string
+		emb       []float32
+	}
+	var all []rawRow
+	for rows.Next() {
+		var r rawRow
+		var embBlob []byte
+		if err := rows.Scan(&r.id, &r.role, &r.content, &r.createdAt, &embBlob); err != nil {
+			continue
+		}
+		if len(embBlob) > 0 {
+			r.emb = blobToFloats(embBlob)
+		}
+		all = append(all, r)
+	}
+	if len(all) == 0 {
+		return nil
+	}
+
+	// Group into turns: user message followed by the next assistant response.
+	type turn struct {
+		date      time.Time
+		userText  string
+		botText   string
+		userEmb   []float32
+		score     float64
+	}
+	var turns []turn
+	for i := 0; i < len(all); i++ {
+		if all[i].role != "user" {
+			continue
+		}
+		t := turn{
+			userText: all[i].content,
+			userEmb:  all[i].emb,
+		}
+		t.date, _ = time.Parse("2006-01-02 15:04:05", all[i].createdAt)
+		// Find the next assistant message in this turn.
+		for j := i + 1; j < len(all) && all[j].role != "user"; j++ {
+			if all[j].role == "assistant" {
+				t.botText = all[j].content
+				break
+			}
+		}
+		turns = append(turns, t)
+	}
+
+	// Score each turn.
+	for i := range turns {
+		if len(turns[i].userEmb) > 0 {
+			turns[i].score = cosineSimilarityF32(queryEmb, turns[i].userEmb)
+		}
+	}
+
+	// Filter by minScore, sort by score descending, take topK.
+	var candidates []turn
+	for _, t := range turns {
+		if t.score >= minScore {
+			candidates = append(candidates, t)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	if len(candidates) > topK {
+		candidates = candidates[:topK]
+	}
+
+	// Sort results chronologically before returning.
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].date.Before(candidates[j].date) })
+
+	snippets := make([]HistorySnippet, len(candidates))
+	for i, t := range candidates {
+		snippets[i] = HistorySnippet{
+			Date:     t.date,
+			UserText: t.userText,
+			BotText:  t.botText,
+		}
+	}
+	return snippets
+}
+
 func (s *SQLite) ActiveCharCount(chatID int64) int {
 	lastReset := s.lastResetID(chatID)
 	var total sql.NullInt64
@@ -243,4 +505,49 @@ func reverseMessages(msgs []llm.Message) []llm.Message {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs
+}
+
+func encodePartsJSON(parts []llm.ContentPart) sql.NullString {
+	if len(parts) == 0 {
+		return sql.NullString{}
+	}
+	b, err := json.Marshal(parts)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(b), Valid: true}
+}
+
+func floatsToBlob(v []float32) []byte {
+	b := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
+	}
+	return b
+}
+
+func blobToFloats(b []byte) []float32 {
+	n := len(b) / 4
+	v := make([]float32, n)
+	for i := range v {
+		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
+	}
+	return v
+}
+
+func cosineSimilarityF32(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0
+	}
+	return dot / denom
 }

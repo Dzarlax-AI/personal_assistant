@@ -1,6 +1,18 @@
 package store
 
-import "telegram-agent/internal/llm"
+import (
+	"time"
+
+	"telegram-agent/internal/llm"
+)
+
+// ChatStats holds per-chat usage statistics.
+type ChatStats struct {
+	ActiveMessages int
+	ActiveChars    int
+	LastCompactAt  time.Time // zero if never compacted
+	LastMessageAt  time.Time // zero if no messages
+}
 
 // Store is the interface for conversation history storage.
 type Store interface {
@@ -22,4 +34,31 @@ type CompactableStore interface {
 	AddSummary(chatID int64, content string)
 	MarkCompacted(ids []int64) error
 	ActiveCharCount(chatID int64) int
+	GetStats(chatID int64) ChatStats
+}
+
+// HistorySnippet is a short excerpt from a past conversation turn, used for
+// cross-session context injection into the system prompt.
+type HistorySnippet struct {
+	Date      time.Time
+	UserText  string
+	BotText   string
+}
+
+// SemanticStore extends CompactableStore with vector-similarity history retrieval.
+// AddMessageWithEmbedding stores a message alongside its pre-computed embedding so
+// that GetSemanticHistory can rank older turns by relevance to the current query.
+type SemanticStore interface {
+	CompactableStore
+	// AddMessageWithEmbedding stores msg and its embedding in one write.
+	AddMessageWithEmbedding(chatID int64, msg llm.Message, emb []float32)
+	// GetSemanticHistory returns the last recentN messages unconditionally, plus up
+	// to topK older conversational turns ranked by cosine similarity to queryEmb.
+	// Results are always returned in chronological order.
+	GetSemanticHistory(chatID int64, queryEmb []float32, recentN, topK int) []llm.Message
+	// SearchAllSessions searches across ALL sessions (ignoring reset markers) and
+	// returns up to topK turns from past sessions that are semantically similar to
+	// queryEmb and have cosine similarity above minScore.
+	// Turns from the current session are excluded.
+	SearchAllSessions(chatID int64, queryEmb []float32, topK int, minScore float64) []HistorySnippet
 }

@@ -6,13 +6,24 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/mcp"
 	"telegram-agent/internal/store"
 )
 
-const maxToolIterations = 5
+const (
+	maxToolIterations = 5
+	semanticRecentN   = 10 // always include last N messages in current session
+	semanticTopK      = 20 // up to K older turns selected by similarity within session
+
+	crossSessionTopK      = 5     // max snippets from past sessions
+	crossSessionMinScore  = 0.75  // cosine threshold for relevance
+	crossSessionMaxChars  = 3000  // total budget for cross-session block in system prompt
+	snippetUserMaxChars   = 200   // per-snippet user text truncation
+	snippetBotMaxChars    = 300   // per-snippet assistant text truncation
+)
 
 type Agent struct {
 	router    *llm.Router
@@ -36,7 +47,10 @@ func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Co
 
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
-	a.store.AddMessage(chatID, userMsg)
+	queryText := messageText(userMsg)
+
+	// Store user message; embed it if semantic store + MCP embeddings are both available.
+	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
 
 	// Auto-compact if needed
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
@@ -48,13 +62,18 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 
 	var tools []llm.Tool
 	if a.mcp != nil {
-		tools = a.mcp.LLMToolsForQuery(ctx, messageText(userMsg))
+		tools = a.mcp.LLMToolsForQuery(ctx, queryText)
 	}
 
+	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
+
 	for i := 0; i < maxToolIterations; i++ {
-		history := a.store.GetHistory(chatID)
+		history := a.getHistory(chatID, queryEmb)
 
 		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
+		if crossSessionCtx != "" {
+			sysPrompt += "\n\n" + crossSessionCtx
+		}
 		resp, err := a.router.Chat(ctx, history, sysPrompt, tools)
 		if err != nil {
 			return "", fmt.Errorf("llm: %w", err)
@@ -137,6 +156,15 @@ type ToolInfo struct {
 	ServerName string
 }
 
+// GetStats returns per-chat statistics. Only available when using SQLite store.
+func (a *Agent) GetStats(chatID int64) (store.ChatStats, bool) {
+	cs, ok := a.store.(store.CompactableStore)
+	if !ok {
+		return store.ChatStats{}, false
+	}
+	return cs.GetStats(chatID), true
+}
+
 func (a *Agent) ListTools() []ToolInfo {
 	if a.mcp == nil {
 		return nil
@@ -147,6 +175,75 @@ func (a *Agent) ListTools() []ToolInfo {
 		result[i] = ToolInfo{Name: t.Name, ServerName: t.ServerName}
 	}
 	return result
+}
+
+// storeUserMessage saves the user message. If the store and MCP client both support
+// embeddings, it also computes and stores the embedding for semantic history retrieval.
+// Returns the embedding (may be nil if unavailable).
+func (a *Agent) storeUserMessage(ctx context.Context, chatID int64, msg llm.Message, text string) []float32 {
+	sem, hasSem := a.store.(store.SemanticStore)
+	if hasSem && a.mcp != nil {
+		emb, err := a.mcp.EmbedText(ctx, text)
+		if err == nil {
+			sem.AddMessageWithEmbedding(chatID, msg, emb)
+			return emb
+		}
+		a.logger.Debug("embedding unavailable, storing without", "err", err)
+	}
+	a.store.AddMessage(chatID, msg)
+	return nil
+}
+
+// buildCrossSessionContext searches past sessions and returns a formatted block
+// ready to append to the system prompt. Returns "" when nothing relevant is found
+// or when semantic search is unavailable.
+func (a *Agent) buildCrossSessionContext(ctx context.Context, chatID int64, queryEmb []float32) string {
+	if len(queryEmb) == 0 {
+		return ""
+	}
+	sem, ok := a.store.(store.SemanticStore)
+	if !ok {
+		return ""
+	}
+	snippets := sem.SearchAllSessions(chatID, queryEmb, crossSessionTopK, crossSessionMinScore)
+	if len(snippets) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\nRelevant context from previous conversations:\n")
+	total := sb.Len()
+
+	for _, s := range snippets {
+		userText := truncateChars(s.UserText, snippetUserMaxChars)
+		botText := truncateChars(s.BotText, snippetBotMaxChars)
+		line := fmt.Sprintf("[%s] You: %s\nAssistant: %s\n\n",
+			s.Date.Format("2006-01-02"), userText, botText)
+		if total+len(line) > crossSessionMaxChars {
+			break
+		}
+		sb.WriteString(line)
+		total += len(line)
+	}
+	return sb.String()
+}
+
+// truncateChars truncates s to at most n characters (rune-aware), appending "…" if cut.
+func truncateChars(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:n]) + "…"
+}
+
+// getHistory returns conversation history. Uses semantic retrieval when a query
+// embedding is available; falls back to the standard last-N approach otherwise.
+func (a *Agent) getHistory(chatID int64, queryEmb []float32) []llm.Message {
+	if sem, ok := a.store.(store.SemanticStore); ok && len(queryEmb) > 0 {
+		return sem.GetSemanticHistory(chatID, queryEmb, semanticRecentN, semanticTopK)
+	}
+	return a.store.GetHistory(chatID)
 }
 
 // messageText extracts plain text from a message (handles both Content and Parts).
