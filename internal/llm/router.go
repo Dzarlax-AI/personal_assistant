@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const classifierPrompt = `Does this message require deep step-by-step reasoning, mathematical proof, or complex multi-step analysis? Reply with only 'yes' or 'no'.`
@@ -122,7 +123,11 @@ func (r *Router) saveOverrides() {
 	if err != nil {
 		return
 	}
-	os.WriteFile(r.persistPath, data, 0644) //nolint:errcheck
+	if err := os.WriteFile(r.persistPath, data, 0644); err != nil {
+		r.logger.Error("failed to save routing overrides", "path", r.persistPath, "err", err)
+	} else {
+		r.logger.Info("routing overrides saved", "path", r.persistPath)
+	}
 }
 
 // GetConfig returns a snapshot of the current routing configuration.
@@ -280,8 +285,11 @@ func (r *Router) classify(ctx context.Context, text string) bool {
 	if provider == nil {
 		return false
 	}
+	classifierCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	msgs := []Message{{Role: "user", Content: text}}
-	resp, err := provider.Chat(ctx, msgs, classifierPrompt, nil)
+	resp, err := provider.Chat(classifierCtx, msgs, classifierPrompt, nil)
 	if err != nil {
 		r.logger.Warn("classifier call failed, using primary", "err", err)
 		return false

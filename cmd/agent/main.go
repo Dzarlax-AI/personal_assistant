@@ -46,15 +46,11 @@ func main() {
 		providers[key] = p
 	}
 
-	// Primary (required)
-	primary, err := llm.NewDeepSeek(cfg.Models.DeepSeek)
-	if err != nil {
-		logger.Error("failed to init primary LLM", "err", err)
-		os.Exit(1)
+	// All providers are optional — at least the one referenced by routing.default must be present.
+	if cfg.Models.DeepSeek.APIKey != "" {
+		p, e := llm.NewDeepSeek(cfg.Models.DeepSeek)
+		addProvider("deepseek", p, e)
 	}
-	providers[cfg.Routing.Default] = primary
-
-	// Optional providers
 	if cfg.Models.DeepSeekR1.APIKey != "" {
 		p, e := llm.NewDeepSeek(cfg.Models.DeepSeekR1)
 		addProvider("deepseek-r1", p, e)
@@ -79,6 +75,13 @@ func main() {
 		p, e := llm.NewQwen(cfg.Models.QwenMax)
 		addProvider("qwen-max", p, e)
 	}
+
+	// Ensure the default routing provider is available.
+	if providers[cfg.Routing.Default] == nil {
+		logger.Error("default routing provider not configured or failed to init", "provider", cfg.Routing.Default)
+		os.Exit(1)
+	}
+	primary := providers[cfg.Routing.Default]
 
 	// Default role keys if not specified
 	multimodalKey := cfg.Routing.Multimodal
@@ -134,8 +137,13 @@ func main() {
 		logger.Warn("failed to load routing overrides", "err", err)
 	}
 
-	// Init compacter (uses primary model for summarization)
-	compacter := agent.NewCompacter(primary)
+	// Init compacter — use the effective primary after overrides are loaded.
+	effectivePrimaryKey := router.GetConfig().Primary
+	effectivePrimary := providers[effectivePrimaryKey]
+	if effectivePrimary == nil {
+		effectivePrimary = primary
+	}
+	compacter := agent.NewCompacter(effectivePrimary)
 
 	// Init MCP client
 	var mcpClient *mcp.Client
@@ -149,8 +157,8 @@ func main() {
 		mcpClient.Initialize(initCtx)
 		cancel()
 
-		if cfg.ToolFilter.TopK > 0 && cfg.Models.Embedding.APIKey != "" {
-			mcpClient.EnableEmbeddings(cfg.Models.Embedding.APIKey, cfg.Models.Embedding.Model, cfg.ToolFilter.TopK)
+		if cfg.ToolFilter.TopK > 0 && (cfg.Models.Embedding.APIKey != "" || cfg.Models.Embedding.BaseURL != "") {
+			mcpClient.EnableEmbeddings(cfg.Models.Embedding, cfg.ToolFilter.TopK)
 			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
 			mcpClient.EmbedTools(embedCtx)
 			embedCancel()
@@ -171,5 +179,7 @@ func main() {
 	logger.Info("agent started", "model", router.Name(), "providers", len(providers), "mcp_servers", len(mcpServers))
 	handler.NotifyMissingRouting()
 	handler.Start(ctx)
+	logger.Info("draining pending batches")
+	handler.Drain()
 	logger.Info("agent stopped")
 }
