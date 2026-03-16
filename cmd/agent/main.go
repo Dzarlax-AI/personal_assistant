@@ -171,6 +171,15 @@ func main() {
 
 	ag := agent.New(router, s, mcpClient, compacter, string(sysPromptBytes), logger)
 
+	// Enable voice transcription if a multimodal Gemini model is configured.
+	if cfg.Models.GeminiFlash.APIKey != "" && cfg.Models.GeminiFlash.Model != "" {
+		ag.EnableTranscription(agent.TranscribeConfig{
+			Model:  cfg.Models.GeminiFlash.Model,
+			APIKey: cfg.Models.GeminiFlash.APIKey,
+		})
+		logger.Info("voice transcription enabled", "model", cfg.Models.GeminiFlash.Model)
+	}
+
 	if cfg.WebSearch.Enabled {
 		baseURL := cfg.WebSearch.BaseURL
 		if baseURL == "" {

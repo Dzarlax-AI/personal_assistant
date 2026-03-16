@@ -452,7 +452,7 @@ func (h *Handler) transcribeVoice(chatID int64, msg *tgbotapi.Message) string {
 	ctx, cancel := context.WithTimeout(context.Background(), transcribeTimeout)
 	defer cancel()
 
-	text, err := h.agent.TranscribeAudio(ctx, data, "ogg")
+	text, err := h.agent.TranscribeAudio(ctx, data, "audio/ogg")
 	if err != nil {
 		h.logger.Error("transcription failed", "chat_id", chatID, "err", err)
 		return ""

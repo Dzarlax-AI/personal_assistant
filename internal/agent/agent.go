@@ -33,14 +33,15 @@ const (
 )
 
 type Agent struct {
-	router    *llm.Router
-	store     store.Store
-	mcp       *mcp.Client
-	compacter *Compacter
-	cache     *ResponseCache
-	sysPrompt string
-	logger    *slog.Logger
-	webSearch *WebSearchConfig // nil = disabled
+	router     *llm.Router
+	store      store.Store
+	mcp        *mcp.Client
+	compacter  *Compacter
+	cache      *ResponseCache
+	sysPrompt  string
+	logger     *slog.Logger
+	webSearch  *WebSearchConfig  // nil = disabled
+	transcribe *TranscribeConfig // nil = disabled
 }
 
 func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Compacter, sysPrompt string, logger *slog.Logger) *Agent {
@@ -55,21 +56,22 @@ func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Co
 	}
 }
 
-// TranscribeAudio sends audio data to the multimodal LLM for transcription.
+// TranscribeAudio transcribes audio data to text via the native Gemini API.
 // Returns the transcribed text. The audio is not stored in conversation history.
-func (a *Agent) TranscribeAudio(ctx context.Context, audioData []byte, format string) (string, error) {
-	msg := llm.Message{
-		Role: "user",
-		Parts: []llm.ContentPart{
-			{Type: "text", Text: "Transcribe this voice message exactly as spoken. Return only the transcription, no commentary."},
-			{Type: "input_audio", InputAudio: &llm.InputAudio{Data: encodeBase64(audioData), Format: format}},
-		},
+func (a *Agent) TranscribeAudio(ctx context.Context, audioData []byte, mimeType string) (string, error) {
+	if a.transcribe == nil {
+		return "", fmt.Errorf("transcription not configured")
 	}
-	resp, err := a.router.Chat(ctx, []llm.Message{msg}, "", nil)
+	text, err := transcribeViaGemini(ctx, *a.transcribe, audioData, mimeType)
 	if err != nil {
-		return "", fmt.Errorf("transcribe: %w", err)
+		return "", err
 	}
-	return strings.TrimSpace(resp.Content), nil
+	return strings.TrimSpace(text), nil
+}
+
+// EnableTranscription configures audio transcription via native Gemini API.
+func (a *Agent) EnableTranscription(cfg TranscribeConfig) {
+	a.transcribe = &cfg
 }
 
 // EnableWebSearch activates the Ollama web search tool.
