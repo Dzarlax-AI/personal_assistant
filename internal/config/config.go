@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Telegram   TelegramConfig   `yaml:"telegram"`
-	Models     ModelsConfig     `yaml:"models"`
-	Routing    RoutingConfig    `yaml:"routing"`
-	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
-	WebSearch  WebSearchConfig  `yaml:"web_search"`
+	Telegram     TelegramConfig     `yaml:"telegram"`
+	Models       ModelsConfig       `yaml:"models"`
+	Routing      RoutingConfig      `yaml:"routing"`
+	ToolFilter   ToolFilterConfig   `yaml:"tool_filter"`
+	WebSearch    WebSearchConfig    `yaml:"web_search"`
+	GeminiNative GeminiNativeConfig `yaml:"gemini_native"`
 }
 
 type WebSearchConfig struct {
@@ -57,6 +58,10 @@ type ModelsConfig struct {
 	QwenPlus        ModelConfig `yaml:"qwen3.5-plus"`
 	QwenMax         ModelConfig `yaml:"qwen-max"`
 	Ollama          ModelConfig `yaml:"ollama"`
+}
+
+type GeminiNativeConfig struct {
+	Grounding bool `yaml:"grounding"` // enable Google Search grounding
 }
 
 type RoutingConfig struct {
