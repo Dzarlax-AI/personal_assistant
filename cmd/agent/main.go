@@ -142,12 +142,15 @@ func main() {
 	}
 
 	// Init compacter — use the effective primary after overrides are loaded.
+	// Fallback handles content-filter rejections (e.g. DashScope DataInspectionFailed).
 	effectivePrimaryKey := router.GetConfig().Primary
 	effectivePrimary := providers[effectivePrimaryKey]
 	if effectivePrimary == nil {
 		effectivePrimary = primary
 	}
-	compacter := agent.NewCompacter(effectivePrimary)
+	fallbackKey := router.GetConfig().Fallback
+	compactFallback := providers[fallbackKey]
+	compacter := agent.NewCompacter(effectivePrimary, compactFallback)
 
 	// Init MCP client
 	var mcpClient *mcp.Client

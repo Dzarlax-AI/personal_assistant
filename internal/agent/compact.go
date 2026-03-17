@@ -28,10 +28,15 @@ Write only the essential content — no preamble or filler.`
 // Compacter summarizes old conversation history.
 type Compacter struct {
 	provider llm.Provider
+	fallback llm.Provider // used when primary rejects content (e.g. DashScope content filter)
 }
 
-func NewCompacter(provider llm.Provider) *Compacter {
-	return &Compacter{provider: provider}
+func NewCompacter(provider llm.Provider, fallback ...llm.Provider) *Compacter {
+	c := &Compacter{provider: provider}
+	if len(fallback) > 0 {
+		c.fallback = fallback[0]
+	}
+	return c
 }
 
 // NeedsCompaction returns true if the conversation history should be compacted.
@@ -128,18 +133,20 @@ func (c *Compacter) simpleCompact(ctx context.Context, rows []store.MessageRow) 
 	for i, row := range rows {
 		history[i] = row.Message
 	}
-	var (
-		resp llm.Response
-		err  error
-	)
-	for attempt := range 2 {
-		resp, err = c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
-		if err == nil {
-			break
-		}
-		slog.Warn("compaction attempt failed", "attempt", attempt+1, "err", err)
+	resp, err := c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+	if err == nil {
+		return resp.Content, nil
 	}
-	return resp.Content, err
+	slog.Warn("compaction primary failed", "provider", c.provider.Name(), "err", err)
+	if c.fallback != nil {
+		slog.Info("compaction retrying with fallback", "provider", c.fallback.Name())
+		resp, err = c.fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+		if err == nil {
+			return resp.Content, nil
+		}
+		slog.Warn("compaction fallback also failed", "provider", c.fallback.Name(), "err", err)
+	}
+	return "", err
 }
 
 // semanticCompact clusters rows by topic (using stored embeddings) and
@@ -159,22 +166,12 @@ func (c *Compacter) semanticCompact(ctx context.Context, rows []store.MessageRow
 		for j, row := range cluster {
 			history[j] = row.Message
 		}
-		var (
-			resp llm.Response
-			err  error
-		)
-		for attempt := range 2 {
-			resp, err = c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
-			if err == nil {
-				break
-			}
-			slog.Warn("cluster compaction attempt failed", "cluster", i, "attempt", attempt+1, "err", err)
-		}
+		resp, err := c.compactCluster(ctx, history)
 		if err != nil {
 			slog.Warn("cluster compaction failed, skipping", "cluster", i, "err", err)
 			continue
 		}
-		summaries = append(summaries, resp.Content)
+		summaries = append(summaries, resp)
 	}
 
 	if len(summaries) == 0 {
@@ -182,6 +179,21 @@ func (c *Compacter) semanticCompact(ctx context.Context, rows []store.MessageRow
 	}
 
 	return strings.Join(summaries, "\n\n---\n\n"), nil
+}
+
+// compactCluster tries the primary provider, then fallback on error.
+func (c *Compacter) compactCluster(ctx context.Context, history []llm.Message) (string, error) {
+	resp, err := c.provider.Chat(ctx, history, compactionSystemPrompt, nil)
+	if err == nil {
+		return resp.Content, nil
+	}
+	if c.fallback != nil {
+		resp, err = c.fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+		if err == nil {
+			return resp.Content, nil
+		}
+	}
+	return "", err
 }
 
 // clusterByEmbedding groups rows into clusters of consecutive turns using
