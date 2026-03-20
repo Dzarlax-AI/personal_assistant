@@ -717,11 +717,31 @@ func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 }
 
 func (h *Handler) sendResponse(chatID int64, text string) {
-	if len(text) >= maxMessageLen {
-		h.sendAsFile(chatID, text)
+	if len(text) < maxMessageLen {
+		h.sendSingleMessage(chatID, text)
 		return
 	}
 
+	// Split long responses into multiple messages.
+	parts := splitMessage(text, maxMessageLen-100) // leave margin for safety
+	allOK := true
+	for i, part := range parts {
+		if !h.sendSingleMessage(chatID, part) {
+			h.logger.Warn("chunk send failed, falling back to file", "chunk", i+1, "of", len(parts))
+			allOK = false
+			break
+		}
+	}
+	if allOK {
+		return
+	}
+
+	// Fallback: send as file.
+	h.sendAsFile(chatID, text)
+}
+
+// sendSingleMessage sends one chunk as HTML (with plain-text fallback). Returns true on success.
+func (h *Handler) sendSingleMessage(chatID int64, text string) bool {
 	htmlText := markdownToTelegramHTML(text)
 	msg := tgbotapi.NewMessage(chatID, htmlText)
 	msg.ParseMode = tgbotapi.ModeHTML
@@ -731,8 +751,10 @@ func (h *Handler) sendResponse(chatID int64, text string) {
 		msg.Text = text
 		if _, err := h.bot.Send(msg); err != nil {
 			h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
+			return false
 		}
 	}
+	return true
 }
 
 func (h *Handler) sendAsFile(chatID int64, text string) {
@@ -751,6 +773,43 @@ func (h *Handler) sendAsFile(chatID int64, text string) {
 		h.logger.Error("failed to send document", "err", err)
 		h.sendPlain(chatID, text[:maxMessageLen-50]+"...\n\n_(response truncated)_")
 	}
+}
+
+// splitMessage splits text into chunks of at most maxLen bytes,
+// breaking at paragraph boundaries (\n\n), then line boundaries (\n).
+func splitMessage(text string, maxLen int) []string {
+	if len(text) <= maxLen {
+		return []string{text}
+	}
+
+	var parts []string
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			parts = append(parts, text)
+			break
+		}
+
+		chunk := text[:maxLen]
+
+		// Try to break at a paragraph boundary.
+		if idx := strings.LastIndex(chunk, "\n\n"); idx > maxLen/4 {
+			parts = append(parts, text[:idx])
+			text = strings.TrimLeft(text[idx:], "\n")
+			continue
+		}
+
+		// Try to break at a line boundary.
+		if idx := strings.LastIndex(chunk, "\n"); idx > maxLen/4 {
+			parts = append(parts, text[:idx])
+			text = text[idx+1:]
+			continue
+		}
+
+		// Hard break at maxLen.
+		parts = append(parts, chunk)
+		text = text[maxLen:]
+	}
+	return parts
 }
 
 // send sends a bot-generated message with MarkdownV2 (text must be pre-escaped).
