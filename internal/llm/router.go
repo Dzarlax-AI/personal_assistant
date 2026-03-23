@@ -181,6 +181,7 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 		fallbackKey := r.cfg.Fallback
 		r.mu.RUnlock()
 		if fallback := r.get(fallbackKey); fallback != nil && fallback != provider {
+			slog.Info("routing", "reason", "fallback", "from", provider.Name(), "to", fallback.Name(), "err", err.Error())
 			if r.OnFallback != nil {
 				r.OnFallback(provider.Name(), fallback.Name())
 			}
@@ -233,11 +234,13 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 
 	// Multimodal takes priority — only vision-capable models support image parts
 	if p := r.get(cfg.Multimodal); p != nil && hasMultimodalContent(messages) {
+		slog.Info("routing", "reason", "multimodal", "provider", p.Name())
 		return p
 	}
 
 	if override != "" {
 		if p := r.get(override); p != nil {
+			slog.Info("routing", "reason", "override", "provider", p.Name())
 			return p
 		}
 	}
@@ -247,6 +250,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 		if p := r.get(cfg.Reasoner); p != nil {
 			if text := lastUserText(messages); len([]rune(text)) >= cfg.ClassifierMinLen {
 				if r.classify(ctx, text) {
+					slog.Info("routing", "reason", "classifier→reasoner", "provider", p.Name())
 					return p
 				}
 			}
@@ -254,6 +258,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	}
 
 	if p := r.get(cfg.Primary); p != nil {
+		slog.Info("routing", "reason", "primary", "provider", p.Name())
 		return p
 	}
 	// Should never happen if config is valid
