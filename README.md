@@ -312,33 +312,19 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 
 Use Claude from your Anthropic Max/Pro subscription as an LLM provider — no separate API key needed. A lightweight Go service runs on the host and wraps `claude -p` CLI.
 
-### How it works
-
-```
-Telegram → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
-```
-
-The bot treats Claude as any other provider. The classifier routes complex queries to it automatically, or users can switch manually with `/model claude`.
-
 ### Setup
 
-**1. Install Claude Code CLI** on the host (not in Docker):
 ```bash
+# 1. Install Claude Code CLI on the host and login
 npm install -g @anthropic-ai/claude-code
-claude   # login with your Anthropic account
-```
+claude  # login with your Anthropic account
 
-**2. Create the project context directory** (Claude reads CLAUDE.md and MCP config from here):
-```bash
+# 2. Create project context (CLAUDE.md, permissions, MCP symlink)
 ./scripts/init-context.sh /path/to/assistant_context
-```
 
-**3. Build and run the bridge:**
-```bash
+# 3. Build and start the bridge
 cd bridge
-
-# Create config
-cat > bridge.yaml << 'EOF'
+cat > bridge.yaml << EOF
 listen: "127.0.0.1:9900"
 project_dir: "/path/to/assistant_context"
 cli_path: "claude"
@@ -346,68 +332,26 @@ default_timeout: 120
 max_concurrent: 2
 auth_token: "your-shared-secret"
 EOF
+go build -o claude-bridge . && ./claude-bridge bridge.yaml
 
-# Build and run
-go build -o claude-bridge .
-./claude-bridge bridge.yaml
+# 4. Add to bot config (config/config.yaml)
+#    models:
+#      claude:
+#        base_url: http://host.docker.internal:9900
+#        api_key: "your-shared-secret"
+#        max_tokens: 120
+#    routing:
+#      reasoner: claude
+
+# 5. Add to .env
+#    CLAUDE_BRIDGE_TOKEN=your-shared-secret
+
+# 6. Add to docker-compose.yml under services.agent:
+#    extra_hosts:
+#      - "host.docker.internal:host-gateway"
 ```
 
-**4. Run as a systemd service** (Linux/macOS launchd):
-```ini
-# /etc/systemd/system/claude-bridge.service
-[Unit]
-Description=Claude Bridge
-After=network.target
-
-[Service]
-ExecStart=/path/to/claude-bridge /path/to/bridge.yaml
-Restart=on-failure
-User=your-user
-
-[Install]
-WantedBy=multi-user.target
-```
-```bash
-sudo systemctl enable --now claude-bridge
-```
-
-**5. Configure the bot** — add to `config/config.yaml`:
-```yaml
-models:
-  claude:
-    base_url: http://host.docker.internal:9900
-    api_key: "your-shared-secret"    # must match bridge auth_token
-    max_tokens: 120                   # timeout in seconds for CLI call
-
-routing:
-  reasoner: claude   # classifier routes complex queries to Claude
-```
-
-Add to `docker-compose.yml`:
-```yaml
-services:
-  agent:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
-
-Add to `.env`:
-```bash
-CLAUDE_BRIDGE_TOKEN=your-shared-secret
-```
-
-### Performance
-
-- Cold start: ~5-8s per request (CLI startup + MCP init + API call)
-- Subsequent requests: same (each `claude -p` is a separate process)
-- Concurrency: limited by `max_concurrent` (default 2) to avoid rate limit issues
-
-### Limitations
-
-- **No streaming** — user waits for the full response
-- **No images** — CLI doesn't accept images via `-p`; multimodal queries go to Gemini
-- **Stateless** — each call is independent; conversation history is formatted into the prompt by the bot
-- **Rate limits** — Max subscription has weekly limits; bridge returns 429 on rate limit errors, triggering fallback
+For production, run the bridge as a systemd service (`Restart=on-failure`). Each `claude -p` call takes ~5-8s (CLI cold start). No streaming, no images (multimodal goes to Gemini), stateless (history formatted into prompt).
 
 ## Companion MCP Servers
 
