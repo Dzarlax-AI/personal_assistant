@@ -47,6 +47,7 @@ flowchart LR
 - `provider.go` — `Provider` interface + `Message`, `Tool`, `ContentPart`, `ImageURL` types
 - `openai_compat.go` — shared OpenAI-compatible implementation using raw `net/http` (no go-openai). `buildMessages(messages, systemPrompt, vision bool)` serialises messages with full control: assistant messages with `tool_calls` and empty content use `"content": null` (not omitted) to satisfy all provider APIs. `image_url` parts are replaced with `[image]` for non-vision providers; `input_audio` parts likewise. Defines `APIError{StatusCode, Message}` for fallback routing.
 - `ollama.go` — native Ollama provider using `/api/chat` protocol (not OpenAI-compat). Supports Ollama Cloud (`https://ollama.com`) and local instances. Handles tool calling (Ollama returns `arguments` as object → serialised to JSON string; generates `call_N` IDs since Ollama omits them). Multimodal: base64 images sent via `images[]` field (strips data URI prefix). `stream: false` for synchronous responses.
+- `claude_bridge.go` — Claude Bridge provider. Sends prompts to `claude-bridge` HTTP service on the host, which wraps `claude -p` CLI. `buildPrompt(messages, systemPrompt)` flattens multi-turn history into `User: ... / Assistant: ...` text format (CLI doesn't support multi-turn). Multimodal parts replaced with `[image]`/`[audio]`/`[document]` placeholders. Returns `APIError` on bridge errors for fallback routing. No tool calling — Claude CLI handles MCP tools itself via `--project-dir`.
 - `router.go` — thread-safe routing config (`mu` protects both `override` and `cfg`). Priority: multimodal → override → classifier → reasoner → primary → fallback on 5xx/429/network. `SetRole(role, model)` + `SetClassifierMinLen(n)` allow runtime changes; `saveOverrides()` persists to `persistPath` (JSON) on every change; `LoadPersistedOverrides()` applies saved values on startup. Classifier has 5 s timeout; input truncated to 500 chars; logs routing decisions at Info when routed to reasoner.
 - All providers are optional in `main.go` — any configured model can be `routing.default`. The bot exits with a clear error if the default provider is missing.
 
@@ -107,7 +108,7 @@ flowchart LR
 
 | File | Purpose |
 |---|---|
-| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `OLLAMA_API_KEY` (optional), `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`), `EMBED_API_KEY` (optional, HF-TEI) |
+| `.env` | Secrets: `TELEGRAM_BOT_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `QWEN_API_KEY`, `OLLAMA_API_KEY` (optional), `TELEGRAM_OWNER_CHAT_ID`, `TZ` (default `Europe/Belgrade`), `EMBED_API_KEY` (optional, HF-TEI), `CLAUDE_BRIDGE_TOKEN` (optional, shared secret with claude-bridge) |
 | `config/config.yaml` | Models, routing, tool_filter, web_search — `${ENV_VAR}` substitution. All models require `base_url`; `embedding` is exception (no `base_url`/`max_tokens`). `Validate()` checks required fields and numeric ranges on load. |
 | `config/routing.json` | Runtime routing overrides from `/routing` UI — auto-created, applied over `config.yaml` at startup. **Applied before compacter init**, so effective primary is always correct. |
 | `config/mcp.json` | MCP servers in Claude Desktop format |
@@ -168,6 +169,21 @@ Migrations run at startup with `ALTER TABLE ADD COLUMN` (idempotent in SQLite). 
 ### CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs `go test -race -count=1 ./...` before Docker build and push. A failed test prevents the image from being published.
+
+### Claude Bridge
+
+`bridge/` contains a standalone Go HTTP service that runs on the host and wraps `claude -p` CLI. The bot (in Docker) calls it as any other LLM provider.
+
+```
+Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
+```
+
+- `bridge/main.go` — HTTP service: `/ask` (prompt → CLI → response), `/health`
+- `bridge/bridge.yaml` — config: listen addr, project_dir, auth_token, max_concurrent, timeout
+- Bearer auth on all endpoints; semaphore limits concurrent CLI calls
+- `--project-dir` is set via `cmd.Dir` (CLI reads CLAUDE.md and .mcp.json from cwd)
+- JSON output parsing with raw text fallback; `APIError` for router fallback routing
+- `scripts/init-context.sh` creates the project context directory (`assistant_context/`) with CLAUDE.md, settings.json, and MCP config symlink
 
 ### Adding a new LLM provider
 

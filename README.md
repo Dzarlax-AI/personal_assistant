@@ -5,6 +5,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 ## Features
 
 - **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner
+- **Claude via bridge** — use Claude (Anthropic Max subscription) as a provider through a lightweight host-side bridge service that wraps `claude -p` CLI; no separate API key needed
 - **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
 - **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline
 - **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
@@ -100,6 +101,14 @@ config/
   mcp.json.example     # template
   routing.json         # runtime routing overrides — auto-created
 data/                  # SQLite DB — not in git
+bridge/                # claude-bridge host service (optional)
+  main.go              # HTTP → claude -p wrapper
+  bridge.yaml          # bridge config (not in git)
+scripts/
+  init-context.sh      # creates assistant_context directory
+templates/
+  CLAUDE.md            # system context template for Claude sessions
+  settings.json        # permissions template for Claude CLI
 ```
 
 ## Configuration
@@ -184,11 +193,17 @@ models:
   #   api_key: ${OLLAMA_API_KEY}  # required for cloud; optional for local
   #   base_url: https://ollama.com # default; http://localhost:11434 for local
 
+  # Claude via bridge (requires claude-bridge running on host)
+  # claude:
+  #   base_url: http://host.docker.internal:9900
+  #   api_key: ${CLAUDE_BRIDGE_TOKEN}
+  #   max_tokens: 120              # timeout in seconds
+
 routing:
   default: deepseek          # primary model — can be any configured model name
   fallback: gemini-flash-lite
   multimodal: gemini-flash
-  reasoner: deepseek-r1
+  reasoner: deepseek-r1      # set to "claude" to route complex queries via bridge
   classifier: qwen-flash     # model for reasoning detection; omit to disable
   classifier_min_length: 100 # min chars to run classifier; 0 = disabled
   compaction_model: deepseek
@@ -293,6 +308,107 @@ This is complementary to the [personal-memory](https://github.com/dzarlax/person
 - Compaction triggers when estimated token count exceeds **16 000 tokens** (images count as 1000 tokens each)
 - When embeddings are configured, old messages are **clustered by topic** (cosine similarity < 0.65 starts a new cluster) and each cluster is summarised separately — producing a more structured, topic-aware summary. Falls back to single-pass summarisation when embeddings are unavailable
 
+## Claude Bridge (optional)
+
+Use Claude from your Anthropic Max/Pro subscription as an LLM provider — no separate API key needed. A lightweight Go service runs on the host and wraps `claude -p` CLI.
+
+### How it works
+
+```
+Telegram → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
+```
+
+The bot treats Claude as any other provider. The classifier routes complex queries to it automatically, or users can switch manually with `/model claude`.
+
+### Setup
+
+**1. Install Claude Code CLI** on the host (not in Docker):
+```bash
+npm install -g @anthropic-ai/claude-code
+claude   # login with your Anthropic account
+```
+
+**2. Create the project context directory** (Claude reads CLAUDE.md and MCP config from here):
+```bash
+./scripts/init-context.sh /path/to/assistant_context
+```
+
+**3. Build and run the bridge:**
+```bash
+cd bridge
+
+# Create config
+cat > bridge.yaml << 'EOF'
+listen: "127.0.0.1:9900"
+project_dir: "/path/to/assistant_context"
+cli_path: "claude"
+default_timeout: 120
+max_concurrent: 2
+auth_token: "your-shared-secret"
+EOF
+
+# Build and run
+go build -o claude-bridge .
+./claude-bridge bridge.yaml
+```
+
+**4. Run as a systemd service** (Linux/macOS launchd):
+```ini
+# /etc/systemd/system/claude-bridge.service
+[Unit]
+Description=Claude Bridge
+After=network.target
+
+[Service]
+ExecStart=/path/to/claude-bridge /path/to/bridge.yaml
+Restart=on-failure
+User=your-user
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+sudo systemctl enable --now claude-bridge
+```
+
+**5. Configure the bot** — add to `config/config.yaml`:
+```yaml
+models:
+  claude:
+    base_url: http://host.docker.internal:9900
+    api_key: "your-shared-secret"    # must match bridge auth_token
+    max_tokens: 120                   # timeout in seconds for CLI call
+
+routing:
+  reasoner: claude   # classifier routes complex queries to Claude
+```
+
+Add to `docker-compose.yml`:
+```yaml
+services:
+  agent:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+Add to `.env`:
+```bash
+CLAUDE_BRIDGE_TOKEN=your-shared-secret
+```
+
+### Performance
+
+- Cold start: ~5-8s per request (CLI startup + MCP init + API call)
+- Subsequent requests: same (each `claude -p` is a separate process)
+- Concurrency: limited by `max_concurrent` (default 2) to avoid rate limit issues
+
+### Limitations
+
+- **No streaming** — user waits for the full response
+- **No images** — CLI doesn't accept images via `-p`; multimodal queries go to Gemini
+- **Stateless** — each call is independent; conversation history is formatted into the prompt by the bot
+- **Rate limits** — Max subscription has weekly limits; bridge returns 429 on rate limit errors, triggering fallback
+
 ## Companion MCP Servers
 
 This bot is designed to work with self-hosted MCP servers. Two ready-made servers are available:
@@ -332,6 +448,13 @@ flowchart TD
         GM["gemini-flash"]
         QW["qwen-* (optional)"]
         OL["ollama (optional)"]
+        CB["claude (via bridge)"]
+    end
+
+    subgraph Host ["Host (outside Docker)"]
+        Bridge["claude-bridge\n:9900"]
+        CLI["claude -p CLI"]
+        CTX["assistant_context/\nCLAUDE.md · .mcp.json"]
     end
 
     subgraph Servers ["MCP Servers"]
@@ -365,6 +488,10 @@ flowchart TD
     Router --> GM
     Router --> QW
     Router --> OL
+    Router --> CB
+    CB -->|"POST /ask"| Bridge
+    Bridge -->|"claude -p"| CLI
+    CLI -->|"reads context"| CTX
 ```
 
 See [CLAUDE.md](CLAUDE.md) for developer details.
