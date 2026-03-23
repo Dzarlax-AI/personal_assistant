@@ -79,6 +79,10 @@ func main() {
 		p, e := llm.NewOllama(cfg.Models.Ollama)
 		addProvider("ollama", p, e)
 	}
+	if cfg.Models.Claude.BaseURL != "" {
+		p, e := llm.NewClaudeBridge(cfg.Models.Claude)
+		addProvider("claude", p, e)
+	}
 
 	// Ensure the default routing provider is available.
 	if providers[cfg.Routing.Default] == nil {
