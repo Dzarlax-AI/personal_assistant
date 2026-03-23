@@ -92,14 +92,25 @@ echo "Bridge binary: $BRIDGE_BIN"
 # Generate shared secret + add to .env
 TOKEN=$(openssl rand -hex 16)
 if ! grep -q "CLAUDE_BRIDGE_TOKEN" .env 2>/dev/null; then
-    printf "\n# Claude Bridge\nCLAUDE_BRIDGE_TOKEN=%s\nCLAUDE_BRIDGE_PROJECT_DIR=%s\n" "$TOKEN" "$CONTEXT_DIR" >> .env
-    echo "Added CLAUDE_BRIDGE_TOKEN and PROJECT_DIR to .env"
+    cat >> .env << EOF
+
+# Claude Bridge
+CLAUDE_BRIDGE_TOKEN=$TOKEN
+CLAUDE_BRIDGE_PROJECT_DIR=$CONTEXT_DIR
+CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900
+EOF
+    echo "Added Claude Bridge config to .env"
 else
     echo "CLAUDE_BRIDGE_TOKEN already in .env"
+    # Ensure LISTEN is set (upgrade from older setup)
+    if ! grep -q "CLAUDE_BRIDGE_LISTEN" .env 2>/dev/null; then
+        echo "CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900" >> .env
+        echo "Added CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900 to .env"
+    fi
 fi
 
 echo ""
 echo "=== Done ==="
 echo ""
-echo "Start bridge:  source .env && ./bridge/claude-bridge"
+echo "Start bridge:  export \$(grep -v '^#' .env | xargs); ./bridge/claude-bridge &"
 echo "Start bot:     make docker-up"

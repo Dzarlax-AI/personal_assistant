@@ -52,19 +52,51 @@ make logs
 
 ### With Claude Bridge (optional)
 
+Use Claude (Anthropic Max/Pro subscription) as an LLM provider via a host-side bridge service.
+
+**Prerequisites:** [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in on the host (`npm install -g @anthropic-ai/claude-code && claude`).
+
 ```bash
-# Same as above, plus Claude Bridge setup:
+# 1. Run setup (creates context dir, builds/downloads bridge, generates token)
 ./scripts/setup.sh --with-claude /path/to/assistant_context
 
-# Edit .env (API keys + auto-generated CLAUDE_BRIDGE_TOKEN)
+# 2. Edit .env — fill in API keys, verify CLAUDE_BRIDGE_TOKEN and PROJECT_DIR.
+#    IMPORTANT: add this line (Docker can't reach 127.0.0.1 on the host):
+#    CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900
 nano .env
 
-# Start bridge on host, bot in Docker
-source .env && ./bridge/claude-bridge &
+# 3. Edit config/mcp.json — add your MCP servers with "type": "http" field.
+#    This is required for Claude Code to recognize HTTP-based MCP servers.
+#    Example:
+#    { "mcpServers": { "my-server": { "type": "http", "url": "https://...", "headers": {...} } } }
+#    The bot ignores the "type" field; Claude Code requires it.
+nano config/mcp.json
+
+# 4. Start bridge (exports env vars and runs in background)
+export $(grep -v '^#' .env | xargs); ./bridge/claude-bridge &
+
+# 5. Start bot
 make docker-up
 ```
 
-Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in on the host. For production, run the bridge as a systemd service.
+**Note:** `source .env` does not export variables to subprocesses. Use `export $(grep -v '^#' .env | xargs)` instead.
+
+For production, run the bridge as a systemd service:
+```ini
+# /etc/systemd/system/claude-bridge.service
+[Unit]
+Description=Claude Bridge
+After=network.target
+
+[Service]
+ExecStart=/path/to/bridge/claude-bridge
+EnvironmentFile=/path/to/.env
+Environment=CLAUDE_BRIDGE_LISTEN=0.0.0.0:9900
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ## Running
 
@@ -304,7 +336,35 @@ Telegram → Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude
 
 Setup is handled by `./scripts/setup.sh --with-claude /path/to/assistant_context` — see [Quick start](#quick-start). The script creates the context directory, builds the bridge binary, generates a shared auth token, and updates `.env`.
 
-**Limitations:** ~5-8s per request (CLI cold start), no streaming, no images (routed to Gemini), stateless (history formatted into prompt).
+### How it works
+
+- Bridge runs on the **host** (not in Docker) — it needs access to `claude` CLI
+- Bot in Docker reaches the bridge via `host.docker.internal:9900`
+- Bridge must listen on `0.0.0.0:9900` (not `127.0.0.1`) so Docker can connect
+- Each request: bot formats conversation history into a single text prompt → `claude -p` → response
+- Claude CLI reads `CLAUDE.md` and `.mcp.json` from `assistant_context/` (project context directory)
+- `.mcp.json` is a symlink to `config/mcp.json` — same MCP servers shared between bot and Claude CLI
+- MCP servers in `config/mcp.json` must have `"type": "http"` for Claude Code compatibility (bot ignores this field)
+- Claude CLI also has access to its own global MCP servers from `~/.claude.json`
+
+### Key env vars
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CLAUDE_BRIDGE_TOKEN` | Yes | — | Shared secret (Bearer auth) |
+| `CLAUDE_BRIDGE_PROJECT_DIR` | Yes | — | Path to `assistant_context/` |
+| `CLAUDE_BRIDGE_LISTEN` | No | `127.0.0.1:9900` | **Set to `0.0.0.0:9900` for Docker access** |
+| `CLAUDE_BRIDGE_TIMEOUT` | No | `120` | Default CLI timeout in seconds |
+| `CLAUDE_BRIDGE_CONCURRENCY` | No | `2` | Max parallel CLI calls |
+| `CLAUDE_BRIDGE_CLI` | No | `claude` | Path to CLI binary |
+
+### Limitations
+
+- ~5-8s per request (CLI cold start on each call)
+- No streaming — user waits for full response
+- No images — multimodal queries routed to Gemini
+- Stateless — conversation history formatted into prompt by the bot
+- Claude Code Channels API does not work with Team plans
 
 ## Companion MCP Servers
 
