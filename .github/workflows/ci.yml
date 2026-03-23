@@ -34,11 +34,26 @@ jobs:
       - name: Vet
         run: CGO_ENABLED=0 go vet ./...
 
-  bridge:
-    name: Build Claude Bridge
-    needs: build
+  check-bridge:
+    name: Check Bridge Changes
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    outputs:
+      changed: ${{ steps.filter.outputs.bridge }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bridge:
+              - 'bridge/**'
+
+  bridge:
+    name: Build Claude Bridge
+    needs: [build, check-bridge]
+    runs-on: ubuntu-latest
+    if: needs.check-bridge.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         include:
@@ -112,7 +127,7 @@ jobs:
     name: Release Bridge Binaries
     needs: bridge
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: always() && needs.bridge.result == 'success'
     permissions:
       contents: write
     steps:
