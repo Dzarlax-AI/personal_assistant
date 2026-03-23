@@ -178,12 +178,13 @@ GitHub Actions (`.github/workflows/ci.yml`) runs `go test -race -count=1 ./...` 
 Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → response
 ```
 
-- `bridge/main.go` — HTTP service: `/ask` (prompt → CLI → response), `/health`
-- `bridge/bridge.yaml` — config: listen addr, project_dir, auth_token, max_concurrent, timeout
+- `bridge/main.go` — HTTP service: `/ask` (prompt → CLI → response), `/health`. Zero external dependencies (Go stdlib only)
+- Config via env vars: `CLAUDE_BRIDGE_TOKEN`, `CLAUDE_BRIDGE_PROJECT_DIR`, `CLAUDE_BRIDGE_LISTEN` (default `127.0.0.1:9900`), `CLAUDE_BRIDGE_CLI` (default `claude`), `CLAUDE_BRIDGE_TIMEOUT` (default `120`), `CLAUDE_BRIDGE_CONCURRENCY` (default `2`)
 - Bearer auth on all endpoints; semaphore limits concurrent CLI calls
-- `--project-dir` is set via `cmd.Dir` (CLI reads CLAUDE.md and .mcp.json from cwd)
+- `cmd.Dir` set to project dir — CLI reads CLAUDE.md and .mcp.json from cwd
 - JSON output parsing with raw text fallback; `APIError` for router fallback routing
-- `scripts/init-context.sh` creates the project context directory (`assistant_context/`) with CLAUDE.md, settings.json, and MCP config symlink
+- `scripts/init-context.sh` creates the project context directory with CLAUDE.md, settings.json, and MCP config symlink
+- `scripts/setup.sh --with-claude /path` — full setup: context dir, build/download bridge binary, generate auth token
 
 ### Adding a new LLM provider
 

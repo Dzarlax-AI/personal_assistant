@@ -60,11 +60,11 @@ make logs
 nano .env
 
 # Start bridge on host, bot in Docker
-./bridge/claude-bridge bridge/bridge.yaml &
+source .env && ./bridge/claude-bridge &
 make docker-up
 ```
 
-Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and an Anthropic Max/Pro subscription. For production, run the bridge as a systemd service.
+Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and logged in on the host. For production, run the bridge as a systemd service.
 
 ## Running
 
@@ -89,8 +89,7 @@ config/
   routing.json         # runtime routing overrides — auto-created
 data/                  # SQLite DB — not in git
 bridge/                # claude-bridge host service (optional)
-  main.go              # HTTP → claude -p wrapper
-  bridge.yaml          # bridge config (not in git)
+  main.go              # HTTP → claude -p wrapper (config via env vars)
 scripts/
   init-context.sh      # creates assistant_context directory
 templates/
