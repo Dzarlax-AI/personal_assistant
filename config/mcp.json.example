@@ -1,12 +1,14 @@
 {
   "mcpServers": {
     "personal-memory": {
+      "type": "http",
       "url": "${MEMORY_URL}",
       "headers": {
         "Authorization": "Basic ${MEMORY_BASIC_AUTH}"
       }
     },
     "health-dashboard": {
+      "type": "http",
       "url": "${HEALTH_URL}",
       "headers": {
         "X-API-Key": "${HEALTH_API_KEY}"

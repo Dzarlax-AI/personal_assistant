@@ -27,6 +27,7 @@ type ToolFilterConfig struct {
 }
 
 type MCPServerConfig struct {
+	Type       string            `json:"type,omitempty"` // "http" — used by Claude Code, ignored by bot
 	URL        string            `json:"url"`
 	Headers    map[string]string `json:"headers"`
 	DenyTools  []string          `json:"denyTools"`
