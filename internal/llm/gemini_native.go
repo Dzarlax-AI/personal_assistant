@@ -69,10 +69,11 @@ type geminiContent struct {
 
 // geminiPart uses pointers/omitempty so only one field is serialised per part.
 type geminiPart struct {
-	Text             string                `json:"text,omitempty"`
-	InlineData       *geminiInlineData     `json:"inline_data,omitempty"`
-	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
-	FunctionResponse *geminiFunctionResp   `json:"functionResponse,omitempty"`
+	Text               string                `json:"text,omitempty"`
+	InlineData         *geminiInlineData     `json:"inline_data,omitempty"`
+	FunctionCall       *geminiFunctionCall   `json:"functionCall,omitempty"`
+	FunctionResponse   *geminiFunctionResp   `json:"functionResponse,omitempty"`
+	ThoughtSignature   string                `json:"thoughtSignature,omitempty"`
 }
 
 type geminiInlineData struct {
@@ -189,9 +190,10 @@ func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, sys
 				argsJSON = []byte("{}")
 			}
 			result.ToolCalls = append(result.ToolCalls, ToolCall{
-				ID:        fmt.Sprintf("call_%d", i),
-				Name:      part.FunctionCall.Name,
-				Arguments: string(argsJSON),
+				ID:               fmt.Sprintf("call_%d", i),
+				Name:             part.FunctionCall.Name,
+				Arguments:        string(argsJSON),
+				ThoughtSignature: part.ThoughtSignature,
 			})
 		}
 	}
@@ -276,9 +278,13 @@ func (p *GeminiNativeProvider) buildContents(messages []Message) []geminiContent
 			for _, tc := range m.ToolCalls {
 				var args any
 				json.Unmarshal([]byte(tc.Arguments), &args) //nolint:errcheck
-				parts = append(parts, geminiPart{
+				part := geminiPart{
 					FunctionCall: &geminiFunctionCall{Name: tc.Name, Args: args},
-				})
+				}
+				if tc.ThoughtSignature != "" {
+					part.ThoughtSignature = tc.ThoughtSignature
+				}
+				parts = append(parts, part)
 			}
 			if m.Content != "" {
 				parts = append(parts, geminiPart{Text: m.Content})

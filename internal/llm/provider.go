@@ -45,9 +45,10 @@ type Tool struct {
 }
 
 type ToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON string
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Arguments        string `json:"arguments"` // JSON string
+	ThoughtSignature string `json:"thought_signature,omitempty"` // Gemini: required when replaying function calls in history
 }
 
 type Response struct {
