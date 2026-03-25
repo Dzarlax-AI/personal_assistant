@@ -197,6 +197,10 @@ func (a *Agent) ListModels() []string {
 	return a.router.ProviderNames()
 }
 
+func (a *Agent) ResetProviderSession(name string) {
+	a.router.ResetProviderSession(name)
+}
+
 func (a *Agent) GetRouting() llm.RouterConfig {
 	return a.router.GetConfig()
 }

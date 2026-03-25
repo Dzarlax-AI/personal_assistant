@@ -20,6 +20,7 @@ type claudeBridgeProvider struct {
 	authToken string
 	timeout   time.Duration
 	client    *http.Client
+	sessionID string // set after first call; enables --resume for session continuity
 }
 
 func NewClaudeBridge(cfg config.ModelConfig) (*claudeBridgeProvider, error) {
@@ -45,13 +46,35 @@ func NewClaudeBridge(cfg config.ModelConfig) (*claudeBridgeProvider, error) {
 
 func (p *claudeBridgeProvider) Name() string { return "claude-bridge" }
 
-func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
-	prompt := buildPrompt(messages, systemPrompt)
+// ResetSession clears the stored session ID so the next call starts a fresh Claude session.
+func (p *claudeBridgeProvider) ResetSession() {
+	p.sessionID = ""
+}
 
-	reqBody, _ := json.Marshal(map[string]any{
+func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
+	var prompt string
+	if p.sessionID != "" {
+		// Continuing a session — only send the latest user message.
+		// Claude CLI resumes the session and already has prior context.
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role == "user" {
+				prompt = messageText(messages[i])
+				break
+			}
+		}
+	} else {
+		// First call — send full history so Claude has context.
+		prompt = buildPrompt(messages, systemPrompt)
+	}
+
+	body := map[string]any{
 		"prompt":      prompt,
 		"timeout_sec": int(p.timeout.Seconds()),
-	})
+	}
+	if p.sessionID != "" {
+		body["session_id"] = p.sessionID
+	}
+	reqBody, _ := json.Marshal(body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/ask", bytes.NewReader(reqBody))
 	if err != nil {
@@ -66,17 +89,18 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return Response{}, fmt.Errorf("claude-bridge: read response: %w", err)
 	}
 
 	var bridgeResp struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
-		Error   string `json:"error"`
+		Result    string `json:"result"`
+		SessionID string `json:"session_id"`
+		IsError   bool   `json:"is_error"`
+		Error     string `json:"error"`
 	}
-	if err := json.Unmarshal(body, &bridgeResp); err != nil {
+	if err := json.Unmarshal(respBody, &bridgeResp); err != nil {
 		return Response{}, fmt.Errorf("claude-bridge: parse response: %w", err)
 	}
 
@@ -86,6 +110,11 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 			statusCode = 500
 		}
 		return Response{}, &APIError{StatusCode: statusCode, Message: bridgeResp.Error}
+	}
+
+	// Store session ID for subsequent calls (enables --resume).
+	if bridgeResp.SessionID != "" {
+		p.sessionID = bridgeResp.SessionID
 	}
 
 	return Response{Content: bridgeResp.Result}, nil

@@ -209,6 +209,20 @@ func (r *Router) SetOverride(name string) error {
 	return nil
 }
 
+// SessionResetter is an optional interface for providers that support session management.
+type SessionResetter interface {
+	ResetSession()
+}
+
+// ResetProviderSession resets session state on the named provider (if it supports sessions).
+func (r *Router) ResetProviderSession(name string) {
+	if p, ok := r.providers[name]; ok {
+		if sr, ok := p.(SessionResetter); ok {
+			sr.ResetSession()
+		}
+	}
+}
+
 // GetOverride returns the current override name (empty = auto).
 func (r *Router) GetOverride() string {
 	r.mu.RLock()

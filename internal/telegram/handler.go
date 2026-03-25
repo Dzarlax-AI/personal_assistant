@@ -699,6 +699,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 			h.queueMessage(msg)
 		}
 	case "exit":
+		h.agent.ResetProviderSession("claude")
 		h.agent.SetModel("") //nolint:errcheck
 		h.send(chatID, fmt.Sprintf("Back to auto\\-routing\\. Model: `%s`", escapeMarkdown(h.agent.ModelName())))
 	case "routing":

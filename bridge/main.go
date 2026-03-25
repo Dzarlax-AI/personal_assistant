@@ -54,6 +54,7 @@ type AskRequest struct {
 
 type AskResponse struct {
 	Result     string `json:"result"`
+	SessionID  string `json:"session_id,omitempty"`
 	Model      string `json:"model,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
 	IsError    bool   `json:"is_error"`
@@ -71,7 +72,7 @@ type Bridge struct {
 	logger         *slog.Logger
 }
 
-func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) AskResponse {
+func (b *Bridge) callCLI(ctx context.Context, prompt, sessionID string, timeoutSec int) AskResponse {
 	start := time.Now()
 
 	// Acquire semaphore with timeout
@@ -87,10 +88,19 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 	cliCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cliCtx, b.cliPath, "-p", prompt, "--output-format", "json", "--no-session-persistence")
+	args := []string{"-p", prompt, "--output-format", "json"}
+	if sessionID != "" {
+		// Resume an existing Claude session — preserves conversation context.
+		args = append(args, "--resume", sessionID)
+	} else {
+		// One-shot call — don't persist the session.
+		args = append(args, "--no-session-persistence")
+	}
+
+	cmd := exec.CommandContext(cliCtx, b.cliPath, args...)
 	cmd.Dir = b.projectDir
 
-	b.logger.Info("calling CLI", "timeout", timeoutSec, "prompt_len", len(prompt))
+	b.logger.Info("calling CLI", "timeout", timeoutSec, "prompt_len", len(prompt), "session_id", sessionID)
 
 	output, err := cmd.Output()
 	duration := time.Since(start).Milliseconds()
@@ -115,11 +125,12 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 
 	// Try JSON parse
 	var parsed struct {
-		Result string `json:"result"`
-		Model  string `json:"model"`
+		Result    string `json:"result"`
+		Model     string `json:"model"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.Unmarshal(output, &parsed); err == nil && parsed.Result != "" {
-		return AskResponse{Result: parsed.Result, Model: parsed.Model, DurationMs: duration}
+		return AskResponse{Result: parsed.Result, SessionID: parsed.SessionID, Model: parsed.Model, DurationMs: duration}
 	}
 
 	// Fallback: raw text
@@ -151,7 +162,7 @@ func (b *Bridge) handleAsk(w http.ResponseWriter, r *http.Request) {
 		timeout = b.defaultTimeout
 	}
 
-	resp := b.callCLI(r.Context(), req.Prompt, timeout)
+	resp := b.callCLI(r.Context(), req.Prompt, req.SessionID, timeout)
 
 	status := http.StatusOK
 	if resp.IsError {
