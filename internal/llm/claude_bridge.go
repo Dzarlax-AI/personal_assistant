@@ -105,6 +105,10 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 	}
 
 	if bridgeResp.IsError {
+		// If resume failed, reset session and let the caller retry.
+		if p.sessionID != "" {
+			p.sessionID = ""
+		}
 		statusCode := resp.StatusCode
 		if statusCode == 200 {
 			statusCode = 500
