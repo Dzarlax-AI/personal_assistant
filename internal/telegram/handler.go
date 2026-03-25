@@ -526,8 +526,79 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message) {
 
 	reqCtx, cancelReq := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancelReq()
-	response, err := h.agent.Process(reqCtx, chatID, userMsg, onToolCall)
-	stopTyping()
+
+	var response string
+	var err error
+
+	if h.agent.SupportsStreaming() {
+		// Streaming path: update message in real-time via editMessageText.
+		var streamMsgID int
+		var lastEdit time.Time
+		const editInterval = 800 * time.Millisecond
+		var streamStopped bool
+
+		onChunk := func(accumulated string) {
+			if streamStopped {
+				return
+			}
+			// Stop live editing if text gets too long for a single message.
+			if len(accumulated) > maxMessageLen-200 {
+				streamStopped = true
+				return
+			}
+			now := time.Now()
+			if streamMsgID == 0 {
+				// Send initial message with first chunk.
+				msg := tgbotapi.NewMessage(chatID, accumulated+"▍")
+				m, sendErr := h.bot.Send(msg)
+				if sendErr == nil {
+					streamMsgID = m.MessageID
+					lastEdit = now
+					stopTyping() // no need for typing indicator during streaming
+				}
+				return
+			}
+			if now.Sub(lastEdit) < editInterval {
+				return // rate-limit edits
+			}
+			edit := tgbotapi.NewEditMessageText(chatID, streamMsgID, accumulated+"▍")
+			if _, editErr := h.bot.Send(edit); editErr == nil {
+				lastEdit = now
+			}
+		}
+
+		response, err = h.agent.ProcessStream(reqCtx, chatID, userMsg, onToolCall, onChunk)
+		stopTyping()
+
+		// Clean up streaming message — replace with final formatted response.
+		if streamMsgID != 0 && err == nil {
+			if statusMsgID != 0 {
+				h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
+				statusMsgID = 0
+			}
+			suffix := ""
+			if len(toolsUsed) > 0 {
+				suffix = "\n\n`⚙️ " + strings.Join(toolsUsed, " · ") + "`"
+			}
+			finalText := response + suffix
+			htmlText := markdownToTelegramHTML(finalText)
+
+			if len(htmlText) < maxMessageLen {
+				edit := tgbotapi.NewEditMessageText(chatID, streamMsgID, htmlText)
+				edit.ParseMode = tgbotapi.ModeHTML
+				if _, editErr := h.bot.Send(edit); editErr == nil {
+					// Clean up tool status and return — done.
+					return
+				}
+			}
+			// HTML too long or edit failed — delete streaming msg and fall through to sendResponse.
+			h.bot.Request(tgbotapi.NewDeleteMessage(chatID, streamMsgID)) //nolint:errcheck
+		}
+	} else {
+		// Non-streaming path (Claude Bridge, etc.)
+		response, err = h.agent.Process(reqCtx, chatID, userMsg, onToolCall)
+		stopTyping()
+	}
 
 	if statusMsgID != 0 {
 		h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck

@@ -170,6 +170,117 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
 }
 
+// ProcessStream is like Process but streams the final text response via onChunk.
+// Tool-calling iterations remain synchronous. onChunk receives the accumulated text so far.
+func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string), onChunk func(accumulated string)) (string, error) {
+	queryText := messageText(userMsg)
+	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
+
+	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
+		a.logger.Info("auto-compacting conversation", "chat_id", chatID)
+		if err := a.compacter.Compact(ctx, chatID, a.store); err != nil {
+			a.logger.Warn("auto compaction failed", "err", err)
+		}
+	}
+
+	var tools []llm.Tool
+	if a.mcp != nil {
+		tools = a.mcp.LLMToolsForQuery(ctx, queryText)
+	}
+	if a.webSearch != nil {
+		tools = append(tools, webSearchTool())
+	}
+
+	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
+
+	if cached, ok := a.cache.Get(chatID, queryEmb); ok {
+		a.logger.Info("cache hit", "chat_id", chatID)
+		a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: cached})
+		return cached, nil
+	}
+
+	for i := 0; i < maxToolIterations; i++ {
+		history := a.getHistory(chatID, queryEmb)
+		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
+		if crossSessionCtx != "" {
+			sysPrompt += "\n\n" + crossSessionCtx
+		}
+
+		ch, err := a.router.ChatStream(ctx, history, sysPrompt, tools)
+		if err != nil {
+			return "", fmt.Errorf("llm: %w", err)
+		}
+
+		var accumulated string
+		var toolCalls []llm.ToolCall
+		hasToolCalls := false
+
+		for chunk := range ch {
+			if chunk.Err != nil {
+				return "", fmt.Errorf("llm stream: %w", chunk.Err)
+			}
+			if chunk.Delta != "" {
+				accumulated += chunk.Delta
+				if !hasToolCalls && onChunk != nil {
+					onChunk(accumulated)
+				}
+			}
+			if chunk.Done {
+				toolCalls = chunk.ToolCalls
+				if len(toolCalls) > 0 {
+					hasToolCalls = true
+				}
+			}
+		}
+
+		if len(toolCalls) == 0 {
+			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
+			if i == 0 {
+				a.cache.Set(chatID, queryEmb, accumulated)
+			}
+			return accumulated, nil
+		}
+
+		// Tool calls — process them (text deltas were suppressed by hasToolCalls or absent).
+		a.store.AddMessage(chatID, llm.Message{
+			Role:      "assistant",
+			Content:   accumulated,
+			ToolCalls: toolCalls,
+		})
+
+		for _, tc := range toolCalls {
+			if onToolCall != nil {
+				onToolCall(tc.Name)
+			}
+			a.logger.Info("tool call", "tool", tc.Name)
+			result, err := a.callTool(ctx, tc.Name, tc.Arguments)
+			if err != nil {
+				a.logger.Warn("tool call failed", "tool", tc.Name, "err", err)
+				result = fmt.Sprintf("Error: %s", err.Error())
+			}
+			if len(result) > toolResultSummarizeThreshold {
+				if summarized, sErr := a.summarizeToolResult(ctx, tc.Name, result); sErr == nil {
+					a.logger.Info("tool result summarized", "tool", tc.Name, "original_len", len(result), "summary_len", len(summarized))
+					result = summarized
+				}
+			}
+			a.logger.Info("tool result", "tool", tc.Name, "result_len", len(result))
+			a.store.AddMessage(chatID, llm.Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			})
+		}
+	}
+
+	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
+}
+
+// SupportsStreaming returns true if the current provider supports streaming.
+func (a *Agent) SupportsStreaming() bool {
+	return a.router.SupportsStreaming()
+}
+
 func (a *Agent) ClearHistory(chatID int64) {
 	a.store.ClearHistory(chatID)
 }

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -63,6 +64,18 @@ type rawChatRequest struct {
 	Messages  []rawMessage `json:"messages"`
 	MaxTokens int          `json:"max_tokens,omitempty"`
 	Tools     []rawTool    `json:"tools,omitempty"`
+	Stream    bool         `json:"stream,omitempty"`
+}
+
+// rawStreamDelta is an SSE chunk from an OpenAI-compatible streaming response.
+type rawStreamDelta struct {
+	Choices []struct {
+		Delta struct {
+			Content   string        `json:"content"`
+			ToolCalls []rawToolCall `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason *string `json:"finish_reason"`
+	} `json:"choices"`
 }
 
 // rawMessage uses `any` for Content so we can serialize null, string, or array.
@@ -273,4 +286,120 @@ func buildTools(tools []Tool) []rawTool {
 		})
 	}
 	return result
+}
+
+// ChatStream opens an SSE stream to the OpenAI-compatible API and returns chunks via a channel.
+func (p *openAICompatProvider) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
+	rawMsgs := buildMessages(messages, systemPrompt, p.vision)
+	req := rawChatRequest{
+		Model:     p.model,
+		Messages:  rawMsgs,
+		MaxTokens: p.maxTokens,
+		Stream:    true,
+	}
+	if len(tools) > 0 {
+		req.Tools = buildTools(tools)
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s: marshal request: %w", p.provName, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("%s: create request: %w", p.provName, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", p.provName, err)
+	}
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		defer httpResp.Body.Close()
+		respBody, _ := io.ReadAll(httpResp.Body)
+		return nil, &APIError{StatusCode: httpResp.StatusCode, Message: string(respBody)}
+	}
+
+	ch := make(chan StreamChunk, 64)
+	go p.readSSE(httpResp, ch)
+	return ch, nil
+}
+
+// readSSE reads SSE lines from an HTTP response and sends StreamChunks.
+func (p *openAICompatProvider) readSSE(resp *http.Response, ch chan<- StreamChunk) {
+	defer close(ch)
+	defer resp.Body.Close()
+
+	// Accumulate tool calls across deltas (they arrive in fragments).
+	var toolCallsByIdx = make(map[int]*rawToolCall)
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var delta rawStreamDelta
+		if err := json.Unmarshal([]byte(data), &delta); err != nil {
+			continue
+		}
+		if len(delta.Choices) == 0 {
+			continue
+		}
+
+		choice := delta.Choices[0]
+
+		// Text content delta — send immediately.
+		if choice.Delta.Content != "" {
+			ch <- StreamChunk{Delta: choice.Delta.Content}
+		}
+
+		// Tool call deltas — accumulate silently.
+		for _, tc := range choice.Delta.ToolCalls {
+			idx := 0 // default index for single tool call
+			if tc.ID != "" {
+				// New tool call — find its index.
+				idx = len(toolCallsByIdx)
+				toolCallsByIdx[idx] = &rawToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: rawFunctionCall{
+						Name: tc.Function.Name,
+					},
+				}
+			} else {
+				// Continuation of existing tool call — append arguments.
+				idx = len(toolCallsByIdx) - 1
+			}
+			if existing, ok := toolCallsByIdx[idx]; ok {
+				existing.Function.Arguments += tc.Function.Arguments
+			}
+		}
+	}
+
+	// Build final chunk.
+	final := StreamChunk{Done: true}
+	if len(toolCallsByIdx) > 0 {
+		for i := 0; i < len(toolCallsByIdx); i++ {
+			tc := toolCallsByIdx[i]
+			final.ToolCalls = append(final.ToolCalls, ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		final.Err = err
+	}
+	ch <- final
 }

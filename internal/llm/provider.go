@@ -60,3 +60,17 @@ type Provider interface {
 	Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error)
 	Name() string
 }
+
+// StreamChunk represents a single piece of a streaming response.
+type StreamChunk struct {
+	Delta     string     // incremental text content
+	ToolCalls []ToolCall // populated only in the final Done chunk if the LLM returned tool calls
+	Done      bool       // true when the stream is finished
+	Err       error      // non-nil if the stream encountered an error
+}
+
+// StreamProvider is an optional interface for providers that support streaming.
+// Providers that do not implement this fall back to synchronous Chat().
+type StreamProvider interface {
+	ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error)
+}

@@ -202,6 +202,69 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 	return resp, err
 }
 
+// ChatStream returns a streaming channel if the current provider supports it.
+// Falls back to wrapping a synchronous Chat() in a single-chunk channel.
+func (r *Router) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
+	provider := r.pick(ctx, messages)
+	if sp, ok := provider.(StreamProvider); ok {
+		ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
+		if err != nil && isUnavailable(err) {
+			// Try fallback providers synchronously.
+			return r.syncFallbackStream(ctx, provider, messages, systemPrompt, tools, err)
+		}
+		return ch, err
+	}
+	// Provider does not stream — wrap synchronous call.
+	return r.syncStream(ctx, provider, messages, systemPrompt, tools)
+}
+
+// syncStream wraps a synchronous Chat() call in a channel.
+func (r *Router) syncStream(ctx context.Context, provider Provider, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
+	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan StreamChunk, 1)
+	ch <- StreamChunk{Delta: resp.Content, ToolCalls: resp.ToolCalls, Done: true}
+	close(ch)
+	return ch, nil
+}
+
+// syncFallbackStream tries the fallback chain synchronously and wraps the result.
+func (r *Router) syncFallbackStream(ctx context.Context, failed Provider, messages []Message, systemPrompt string, tools []Tool, origErr error) (<-chan StreamChunk, error) {
+	r.mu.RLock()
+	chain := []string{r.cfg.Primary, r.cfg.Fallback}
+	r.mu.RUnlock()
+
+	for _, key := range chain {
+		next := r.get(key)
+		if next == nil || next == failed {
+			continue
+		}
+		slog.Info("routing", "reason", "fallback", "from", failed.Name(), "to", next.Name(), "err", origErr.Error())
+		if r.OnFallback != nil {
+			r.OnFallback(failed.Name(), next.Name())
+		}
+		// Try streaming on fallback if supported.
+		if sp, ok := next.(StreamProvider); ok {
+			ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
+			if err == nil {
+				return ch, nil
+			}
+		}
+		// Otherwise sync.
+		return r.syncStream(ctx, next, messages, systemPrompt, tools)
+	}
+	return nil, origErr
+}
+
+// SupportsStreaming returns true if the currently active provider implements StreamProvider.
+func (r *Router) SupportsStreaming() bool {
+	provider := r.pick(context.Background(), nil)
+	_, ok := provider.(StreamProvider)
+	return ok
+}
+
 // Name returns the name of the currently active provider (respecting override).
 func (r *Router) Name() string {
 	return r.pick(context.Background(), nil).Name()
