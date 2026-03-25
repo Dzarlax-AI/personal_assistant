@@ -632,6 +632,8 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"/model list — available models\n"+
 				"/model <name> — switch model\n"+
 				"/model reset — back to auto\\-routing\n"+
+				"/claude <question> — enter Claude mode\n"+
+				"/exit — exit Claude mode\n"+
 				"/tools — list MCP tools\n"+
 				"/mcp update — reload MCP servers\n"+
 				"/help — this help\n\n"+
@@ -683,6 +685,22 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				h.send(chatID, fmt.Sprintf("Model: `%s`", escapeMarkdown(h.agent.ModelName())))
 			}
 		}
+	case "claude":
+		arg := strings.TrimSpace(msg.CommandArguments())
+		if err := h.agent.SetModel("claude"); err != nil {
+			h.send(chatID, "Claude Bridge is not configured\\.")
+			return
+		}
+		h.send(chatID, "Claude mode on\\. Use /exit to return\\.")
+		if arg != "" {
+			// Forward the question as a regular message so the agent processes it.
+			msg.Text = arg
+			msg.Entities = nil
+			h.queueMessage(msg)
+		}
+	case "exit":
+		h.agent.SetModel("") //nolint:errcheck
+		h.send(chatID, fmt.Sprintf("Back to auto\\-routing\\. Model: `%s`", escapeMarkdown(h.agent.ModelName())))
 	case "routing":
 		cfg := h.agent.GetRouting()
 		msg := tgbotapi.NewMessage(chatID, routingMenuText(cfg))
@@ -1095,6 +1113,8 @@ func registerCommands(bot *tgbotapi.BotAPI) error {
 		{Command: "clear", Description: "Reset conversation context"},
 		{Command: "compact", Description: "Compress history (summarise)"},
 		{Command: "model", Description: "Show / switch model"},
+		{Command: "claude", Description: "Enter Claude mode (heavy tasks)"},
+		{Command: "exit", Description: "Exit Claude mode, back to auto-routing"},
 		{Command: "routing", Description: "Configure routing (inline UI)"},
 		{Command: "tools", Description: "List connected MCP tools"},
 		{Command: "mcp", Description: "MCP management (update/reload)"},
