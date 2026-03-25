@@ -87,7 +87,7 @@ func (b *Bridge) callCLI(ctx context.Context, prompt string, timeoutSec int) Ask
 	cliCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cliCtx, b.cliPath, "-p", prompt, "--output-format", "json")
+	cmd := exec.CommandContext(cliCtx, b.cliPath, "-p", prompt, "--output-format", "json", "--no-session-persistence")
 	cmd.Dir = b.projectDir
 
 	b.logger.Info("calling CLI", "timeout", timeoutSec, "prompt_len", len(prompt))
