@@ -92,9 +92,6 @@ func (b *Bridge) callCLI(ctx context.Context, prompt, sessionID string, timeoutS
 	if sessionID != "" {
 		// Resume an existing Claude session — preserves conversation context.
 		args = append(args, "--resume", sessionID)
-	} else {
-		// One-shot call — don't persist the session.
-		args = append(args, "--no-session-persistence")
 	}
 
 	cmd := exec.CommandContext(cliCtx, b.cliPath, args...)
