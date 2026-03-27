@@ -1,7 +1,9 @@
 package voiceapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/hajimehoshi/go-mp3"
 
 	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
@@ -158,19 +162,102 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return MP3 audio.
-	w.Header().Set("Content-Type", "audio/mpeg")
+	// Check if client wants WAV (ESP32 speakers need raw PCM).
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "audio/wav") {
+		wavData, convErr := mp3ToWAV(audio)
+		if convErr != nil {
+			s.logger.Error("MP3→WAV conversion failed", "err", convErr)
+			// Fall back to MP3.
+		} else {
+			audio = wavData
+			s.logger.Info("converted to WAV", "wav_bytes", len(wavData))
+		}
+	}
+
+	respContentType := "audio/mpeg"
+	if strings.Contains(accept, "audio/wav") {
+		respContentType = "audio/wav"
+	}
+
+	w.Header().Set("Content-Type", respContentType)
 	w.Header().Set("X-Transcription", truncate(text, 200))
 	w.Header().Set("X-Response", truncate(response, 500))
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(audio)))
 	w.Write(audio)
 
-	s.logger.Info("voice reply sent", "audio_bytes", len(audio))
+	s.logger.Info("voice reply sent", "audio_bytes", len(audio), "format", respContentType)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// mp3ToWAV decodes MP3 to 16kHz 16-bit mono PCM WAV.
+// go-mp3 outputs stereo 24kHz 16-bit PCM; we downsample and convert to mono.
+func mp3ToWAV(mp3Data []byte) ([]byte, error) {
+	decoder, err := mp3.NewDecoder(bytes.NewReader(mp3Data))
+	if err != nil {
+		return nil, fmt.Errorf("mp3 decode: %w", err)
+	}
+
+	// Read all decoded PCM (stereo, 16-bit LE, source sample rate).
+	pcm, err := io.ReadAll(decoder)
+	if err != nil {
+		return nil, fmt.Errorf("mp3 read: %w", err)
+	}
+
+	srcRate := decoder.SampleRate()
+
+	// Convert stereo to mono: take left channel only (every other int16).
+	monoSamples := len(pcm) / 4 // 4 bytes per stereo sample (2 channels × 2 bytes)
+	mono := make([]int16, monoSamples)
+	for i := 0; i < monoSamples; i++ {
+		mono[i] = int16(binary.LittleEndian.Uint16(pcm[i*4 : i*4+2]))
+	}
+
+	// Resample to 16kHz using linear interpolation.
+	const dstRate = 16000
+	ratio := float64(srcRate) / float64(dstRate)
+	dstLen := int(float64(len(mono)) / ratio)
+	resampled := make([]int16, dstLen)
+	for i := 0; i < dstLen; i++ {
+		srcIdx := float64(i) * ratio
+		idx := int(srcIdx)
+		frac := srcIdx - float64(idx)
+		if idx+1 < len(mono) {
+			resampled[i] = int16(float64(mono[idx])*(1-frac) + float64(mono[idx+1])*frac)
+		} else if idx < len(mono) {
+			resampled[i] = mono[idx]
+		}
+	}
+
+	// Build WAV file.
+	dataSize := len(resampled) * 2
+	buf := make([]byte, 44+dataSize)
+
+	// WAV header.
+	copy(buf[0:], "RIFF")
+	binary.LittleEndian.PutUint32(buf[4:], uint32(36+dataSize))
+	copy(buf[8:], "WAVE")
+	copy(buf[12:], "fmt ")
+	binary.LittleEndian.PutUint32(buf[16:], 16) // chunk size
+	binary.LittleEndian.PutUint16(buf[20:], 1)  // PCM
+	binary.LittleEndian.PutUint16(buf[22:], 1)  // mono
+	binary.LittleEndian.PutUint32(buf[24:], dstRate)
+	binary.LittleEndian.PutUint32(buf[28:], dstRate*2) // byte rate
+	binary.LittleEndian.PutUint16(buf[32:], 2)         // block align
+	binary.LittleEndian.PutUint16(buf[34:], 16)        // bits per sample
+	copy(buf[36:], "data")
+	binary.LittleEndian.PutUint32(buf[40:], uint32(dataSize))
+
+	// Write PCM samples.
+	for i, s := range resampled {
+		binary.LittleEndian.PutUint16(buf[44+i*2:], uint16(s))
+	}
+
+	return buf, nil
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

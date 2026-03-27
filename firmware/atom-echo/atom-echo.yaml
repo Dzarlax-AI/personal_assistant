@@ -10,7 +10,8 @@ esp32:
     type: esp-idf
 
 logger:
-  level: INFO
+  level: DEBUG
+  hardware_uart: UART0
 
 wifi:
   ssid: !secret wifi_ssid
@@ -21,8 +22,9 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-api:
-  reboot_timeout: 0s
+# No Home Assistant API — standalone device.
+# api:
+#   reboot_timeout: 0s
 
 # I2S audio bus (shared between mic and speaker)
 i2s_audio:
@@ -59,7 +61,6 @@ light:
     id: status_led
     pin: GPIO27
     num_leds: 1
-    rmt_channel: 0
     chipset: SK6812
     rgb_order: GRB
     default_transition_length: 0s
@@ -76,8 +77,14 @@ binary_sensor:
     pin:
       number: GPIO39
       inverted: true
+      mode:
+        input: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
     on_press:
       then:
+        - logger.log: "Button PRESSED"
         - light.turn_on:
             id: status_led
             red: 100%
@@ -87,6 +94,7 @@ binary_sensor:
         - lambda: 'id(voice).start_recording();'
     on_release:
       then:
+        - logger.log: "Button RELEASED"
         - lambda: 'id(voice).stop_recording();'
 
 # Custom voice client component
@@ -102,4 +110,4 @@ voice_client:
   led: status_led
   api_url: !secret voice_api_url
   api_token: !secret voice_api_token
-  max_record_seconds: 4
+  max_record_seconds: 3

@@ -4,7 +4,12 @@
 
 #include "esp_http_client.h"
 #include "esp_tls.h"
+#include "esp_crt_bundle.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <algorithm>
 #include <cstring>
 
 namespace esphome {
@@ -12,14 +17,23 @@ namespace voice_client {
 
 static const char *const TAG = "voice_client";
 
-// 16kHz, 16-bit, mono = 32 KB/sec
 static const uint32_t SAMPLE_RATE = 16000;
-static const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;  // 16-bit = 2 bytes per sample
-static const size_t WAV_HEADER_SIZE = 44;
+static const uint32_t BYTES_PER_SEC = SAMPLE_RATE * 2;  // 16-bit mono
 
 void VoiceClient::setup() {
   ESP_LOGI(TAG, "Voice client initialized (url: %s, max_record: %ds)", api_url_.c_str(), max_record_seconds_);
-  audio_buffer_.reserve(max_record_seconds_ * BYTES_PER_SEC + WAV_HEADER_SIZE);
+
+  // Register callback to receive microphone data into static buffer.
+  this->mic_->add_data_callback([this](const std::vector<uint8_t> &data) {
+    if (state_ != State::RECORDING) return;
+    size_t pos = buf_pos_;
+    size_t space = AUDIO_BUF_SIZE - pos;
+    if (space == 0) return;
+    size_t to_copy = std::min(data.size(), space);
+    memcpy(audio_buf_ + pos, data.data(), to_copy);
+    buf_pos_ = pos + to_copy;
+  });
+
   set_state_(State::IDLE);
 }
 
@@ -27,16 +41,22 @@ void VoiceClient::loop() {
   // Check recording timeout.
   if (state_ == State::RECORDING) {
     uint32_t elapsed_ms = millis() - record_start_;
-    if (elapsed_ms >= (uint32_t)(max_record_seconds_ * 1000)) {
-      ESP_LOGW(TAG, "Max recording time reached (%ds)", max_record_seconds_);
+    uint32_t max_ms = max_record_seconds_ * 1000;
+    // Also stop if buffer is full.
+    if (elapsed_ms >= max_ms || buf_pos_ >= AUDIO_BUF_SIZE) {
+      ESP_LOGW(TAG, "Max recording time/buffer reached");
       stop_recording();
     }
   }
 
-  // Process in main loop to avoid blocking ISR callbacks.
   if (should_process_) {
     should_process_ = false;
-    do_process_();
+    // Run HTTP request in a separate FreeRTOS task to avoid watchdog timeout.
+    xTaskCreate([](void *param) {
+      auto *self = static_cast<VoiceClient *>(param);
+      self->do_process_();
+      vTaskDelete(nullptr);
+    }, "voice_http", 8192, this, 5, nullptr);
   }
 }
 
@@ -46,14 +66,12 @@ void VoiceClient::start_recording() {
     return;
   }
 
-  ESP_LOGI(TAG, "Recording started");
-  audio_buffer_.clear();
-  // Reserve space for WAV header — we'll fill it in later.
-  audio_buffer_.resize(WAV_HEADER_SIZE, 0);
+  // Leave space for WAV header at the beginning.
+  buf_pos_ = WAV_HEADER_SIZE;
   record_start_ = millis();
   set_state_(State::RECORDING);
-
   this->mic_->start();
+  ESP_LOGI(TAG, "Recording started");
 }
 
 void VoiceClient::stop_recording() {
@@ -61,30 +79,25 @@ void VoiceClient::stop_recording() {
 
   this->mic_->stop();
 
-  // Read all available audio data from the microphone buffer.
-  // ESPHome microphone component provides data via read() method.
-  size_t data_size = audio_buffer_.size() - WAV_HEADER_SIZE;
+  size_t data_size = buf_pos_ - WAV_HEADER_SIZE;
   uint32_t elapsed_ms = millis() - record_start_;
   ESP_LOGI(TAG, "Recording stopped: %u bytes, %u ms", (unsigned)data_size, elapsed_ms);
 
-  if (data_size < BYTES_PER_SEC / 4) {  // Less than 0.25 sec
-    ESP_LOGW(TAG, "Recording too short, ignoring");
+  if (data_size < BYTES_PER_SEC / 4) {
+    ESP_LOGW(TAG, "Recording too short (%u bytes), ignoring", (unsigned)data_size);
     set_state_(State::IDLE);
     return;
   }
 
-  // Build WAV header at the beginning of the buffer.
-  build_wav_header_(audio_buffer_, data_size);
-
+  build_wav_header_(audio_buf_, data_size);
   set_state_(State::PROCESSING);
   should_process_ = true;
 }
 
 void VoiceClient::do_process_() {
-  ESP_LOGI(TAG, "Sending %u bytes to API...", (unsigned)audio_buffer_.size());
-  set_led_pulse_();
+  size_t total_size = buf_pos_;
+  ESP_LOGI(TAG, "Sending %u bytes to API...", (unsigned)total_size);
 
-  // Configure HTTP client.
   std::string auth_header = "Bearer " + api_token_;
 
   esp_http_client_config_t config = {};
@@ -93,7 +106,6 @@ void VoiceClient::do_process_() {
   config.timeout_ms = 30000;
   config.buffer_size = 2048;
   config.buffer_size_tx = 2048;
-  // Use system cert bundle for TLS (Let's Encrypt).
   config.crt_bundle_attach = esp_crt_bundle_attach;
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -106,19 +118,30 @@ void VoiceClient::do_process_() {
   esp_http_client_set_header(client, "Content-Type", "audio/wav");
   esp_http_client_set_header(client, "Authorization", auth_header.c_str());
   esp_http_client_set_header(client, "Accept", "audio/mpeg");
-  esp_http_client_set_post_field(client, (const char *)audio_buffer_.data(), audio_buffer_.size());
 
-  esp_err_t err = esp_http_client_perform(client);
+  // Use open/write/fetch/read instead of perform() to access the response body.
+  esp_err_t err = esp_http_client_open(client, total_size);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
     esp_http_client_cleanup(client);
     set_state_(State::ERROR);
     return;
   }
 
+  // Write request body.
+  int written = esp_http_client_write(client, (const char *)audio_buf_, total_size);
+  if (written < 0) {
+    ESP_LOGE(TAG, "HTTP write failed");
+    esp_http_client_cleanup(client);
+    set_state_(State::ERROR);
+    return;
+  }
+  ESP_LOGI(TAG, "Sent %d bytes", written);
+
+  // Read response headers.
+  int content_length = esp_http_client_fetch_headers(client);
   int status = esp_http_client_get_status_code(client);
-  int content_length = esp_http_client_get_content_length(client);
-  ESP_LOGI(TAG, "HTTP response: status=%d, length=%d", status, content_length);
+  ESP_LOGI(TAG, "HTTP response: status=%d, content_length=%d", status, content_length);
 
   if (status != 200) {
     ESP_LOGE(TAG, "API error: HTTP %d", status);
@@ -127,47 +150,33 @@ void VoiceClient::do_process_() {
     return;
   }
 
-  // Reuse audio_buffer_ for response (recording data no longer needed).
-  audio_buffer_.clear();
-  if (content_length > 0) {
-    audio_buffer_.resize(content_length);
-  } else {
-    audio_buffer_.resize(64 * 1024);  // 64 KB max if no Content-Length
+  // Read response body into audio_buf_ (reuse recording buffer).
+  size_t total_read = 0;
+  while (total_read < AUDIO_BUF_SIZE) {
+    int read_len = esp_http_client_read(client, (char *)audio_buf_ + total_read, AUDIO_BUF_SIZE - total_read);
+    if (read_len <= 0) break;
+    total_read += read_len;
   }
-
-  int read_len = esp_http_client_read(client, (char *)audio_buffer_.data(), audio_buffer_.size());
+  esp_http_client_close(client);
   esp_http_client_cleanup(client);
 
-  if (read_len <= 0) {
+  if (total_read == 0) {
     ESP_LOGE(TAG, "No audio data in response");
     set_state_(State::ERROR);
     return;
   }
-  audio_buffer_.resize(read_len);
-  ESP_LOGI(TAG, "Received %d bytes of audio", read_len);
+  ESP_LOGI(TAG, "Received %u bytes of audio", (unsigned)total_read);
+  int read_len = total_read;
 
-  // Play MP3 response through speaker.
+  // Play response.
   set_state_(State::PLAYING);
-  // Feed audio data to the speaker component.
-  // The ESPHome speaker component handles MP3 decoding internally
-  // when using the media_player platform, but for raw speaker we
-  // need to handle this differently.
-  //
-  // For now, send raw data to speaker — the speaker component
-  // with media_player platform handles codec detection.
   this->spk_->start();
-  size_t written = this->spk_->play(audio_buffer_.data(), audio_buffer_.size());
-  ESP_LOGI(TAG, "Sent %u bytes to speaker", (unsigned)written);
-
-  // Wait for playback to finish. The speaker runs asynchronously.
-  // We'll check in loop() if the speaker is still playing,
-  // but for simplicity set idle after a delay.
-  // A better approach: poll spk_->is_running() in loop().
+  this->spk_->play(audio_buf_, read_len);
   this->spk_->finish();
   set_state_(State::IDLE);
 }
 
-void VoiceClient::build_wav_header_(std::vector<uint8_t> &buf, uint32_t data_size) {
+void VoiceClient::build_wav_header_(uint8_t *buf, uint32_t data_size) {
   uint32_t file_size = data_size + 36;
   uint16_t num_channels = 1;
   uint16_t bits_per_sample = 16;
@@ -185,23 +194,18 @@ void VoiceClient::build_wav_header_(std::vector<uint8_t> &buf, uint32_t data_siz
     buf[offset + 3] = (v >> 24) & 0xFF;
   };
 
-  // RIFF header
-  memcpy(buf.data(), "RIFF", 4);
+  memcpy(buf, "RIFF", 4);
   write32(4, file_size);
-  memcpy(buf.data() + 8, "WAVE", 4);
-
-  // fmt chunk
-  memcpy(buf.data() + 12, "fmt ", 4);
-  write32(16, 16);  // chunk size
-  write16(20, 1);   // PCM format
+  memcpy(buf + 8, "WAVE", 4);
+  memcpy(buf + 12, "fmt ", 4);
+  write32(16, 16);
+  write16(20, 1);  // PCM
   write16(22, num_channels);
   write32(24, SAMPLE_RATE);
   write32(28, byte_rate);
   write16(32, block_align);
   write16(34, bits_per_sample);
-
-  // data chunk
-  memcpy(buf.data() + 36, "data", 4);
+  memcpy(buf + 36, "data", 4);
   write32(40, data_size);
 }
 
@@ -209,19 +213,18 @@ void VoiceClient::set_state_(State state) {
   state_ = state;
   switch (state) {
     case State::IDLE:
-      set_led_color_(0, 0, 1.0f, 0.2f);  // dim blue
+      set_led_color_(0, 0, 1.0f, 0.2f);
       break;
     case State::RECORDING:
-      set_led_color_(1.0f, 0, 0);  // red
+      set_led_color_(1.0f, 0, 0);
       break;
     case State::PROCESSING:
-      set_led_pulse_();  // yellow pulse
+      set_led_pulse_();
       break;
     case State::PLAYING:
-      set_led_color_(0, 1.0f, 0);  // green
+      set_led_color_(0, 1.0f, 0);
       break;
     case State::ERROR:
-      // Flash red 3 times, then go idle.
       for (int i = 0; i < 3; i++) {
         set_led_color_(1.0f, 0, 0, 1.0f);
         delay(150);
@@ -245,7 +248,7 @@ void VoiceClient::set_led_color_(float r, float g, float b, float brightness) {
 void VoiceClient::set_led_pulse_() {
   if (!led_) return;
   auto call = led_->turn_on();
-  call.set_rgb(1.0f, 0.7f, 0);  // yellow-orange
+  call.set_rgb(1.0f, 0.7f, 0);
   call.set_brightness(0.8f);
   call.set_effect("Pulse");
   call.perform();

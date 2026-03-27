@@ -4,7 +4,6 @@
 #include "esphome/components/microphone/microphone.h"
 #include "esphome/components/speaker/speaker.h"
 #include "esphome/components/light/light_state.h"
-#include <vector>
 
 namespace esphome {
 namespace voice_client {
@@ -16,6 +15,11 @@ enum class State : uint8_t {
   PLAYING,
   ERROR,
 };
+
+// Fixed audio buffer: 48 KB for recording (~1.5s at 16kHz 16bit mono)
+// Plus 44 bytes WAV header. Static allocation avoids heap fragmentation.
+static const size_t WAV_HEADER_SIZE = 44;
+static const size_t AUDIO_BUF_SIZE = 48 * 1024 + WAV_HEADER_SIZE;
 
 class VoiceClient : public Component {
  public:
@@ -38,7 +42,7 @@ class VoiceClient : public Component {
   void set_led_color_(float r, float g, float b, float brightness = 0.8f);
   void set_led_pulse_();
   void do_process_();
-  void build_wav_header_(std::vector<uint8_t> &buf, uint32_t data_size);
+  void build_wav_header_(uint8_t *buf, uint32_t data_size);
 
   microphone::Microphone *mic_{nullptr};
   speaker::Speaker *spk_{nullptr};
@@ -46,10 +50,11 @@ class VoiceClient : public Component {
 
   std::string api_url_;
   std::string api_token_;
-  int max_record_seconds_{4};
+  int max_record_seconds_{3};
 
   State state_{State::IDLE};
-  std::vector<uint8_t> audio_buffer_;
+  uint8_t audio_buf_[AUDIO_BUF_SIZE];
+  volatile size_t buf_pos_{0};  // written from ISR callback
   uint32_t record_start_{0};
   bool should_process_{false};
 };
