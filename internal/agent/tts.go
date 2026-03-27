@@ -75,7 +75,7 @@ func (cfg TTSConfig) Synthesize(ctx context.Context, text string) ([]byte, error
 	ts := jsTimestamp()
 	configMsg := fmt.Sprintf(
 		"X-Timestamp:%s\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n"+
-			`{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"ogg-24khz-16bit-mono-opus"}}}}`,
+			`{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`,
 		ts)
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(configMsg)); err != nil {
 		return nil, fmt.Errorf("tts: send config: %w", err)

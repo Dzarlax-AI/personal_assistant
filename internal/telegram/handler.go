@@ -935,7 +935,7 @@ func (h *Handler) sendVoiceReply(chatID int64, text string) {
 	h.logger.Info("TTS synthesized", "chat_id", chatID, "audio_bytes", len(audio), "text_len", len(plain))
 
 	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
-		Name:  "response.ogg",
+		Name:  "response.mp3",
 		Bytes: audio,
 	})
 	if _, err := h.bot.Send(voice); err != nil {
