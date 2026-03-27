@@ -15,6 +15,7 @@ type Config struct {
 	ToolFilter ToolFilterConfig `yaml:"tool_filter"`
 	WebSearch  WebSearchConfig  `yaml:"web_search"`
 	Filesystem FilesystemConfig `yaml:"filesystem"`
+	TTS        TTSConfig        `yaml:"tts"`
 }
 
 type WebSearchConfig struct {
@@ -30,6 +31,14 @@ type ToolFilterConfig struct {
 type FilesystemConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Root    string `yaml:"root"` // absolute path on the host/container
+}
+
+type TTSConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Voice   string `yaml:"voice"`  // e.g. "ru-RU-DmitryNeural"
+	Rate    string `yaml:"rate"`   // e.g. "+0%", "+20%"
+	Pitch   string `yaml:"pitch"`  // e.g. "+0Hz"
+	Volume  string `yaml:"volume"` // e.g. "+0%"
 }
 
 type MCPServerConfig struct {

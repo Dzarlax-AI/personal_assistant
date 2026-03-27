@@ -228,6 +228,20 @@ func main() {
 		logger.Info("filesystem tools enabled", "root", root)
 	}
 
+	if cfg.TTS.Enabled {
+		voice := cfg.TTS.Voice
+		if voice == "" {
+			voice = "ru-RU-DmitryNeural"
+		}
+		ag.EnableTTS(agent.TTSConfig{
+			Voice:  voice,
+			Rate:   cfg.TTS.Rate,
+			Pitch:  cfg.TTS.Pitch,
+			Volume: cfg.TTS.Volume,
+		})
+		logger.Info("TTS enabled", "voice", voice)
+	}
+
 	handler, err := telegram.NewHandler(cfg.Telegram, ag, logger)
 	if err != nil {
 		logger.Error("failed to init Telegram handler", "err", err)

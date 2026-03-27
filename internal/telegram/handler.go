@@ -238,6 +238,7 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 	var forwardTexts []string  // forwarded messages in this batch
 	var questionTexts []string // regular (non-forwarded) messages in this batch
 	var imageParts []llm.ContentPart
+	var hasVoice bool
 
 	for _, msg := range b.msgs {
 		isForward := msg.ForwardDate != 0
@@ -250,6 +251,7 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 
 		// Transcribe voice/audio messages to text.
 		if msg.Voice != nil || msg.Audio != nil {
+			hasVoice = true
 			voiceText := h.transcribeVoice(chatID, msg)
 			if voiceText != "" {
 				if text != "" {
@@ -367,7 +369,7 @@ func (h *Handler) runBatch(chatID int64, b *pendingBatch) {
 		userMsg = llm.Message{Role: "user", Content: combined}
 	}
 
-	h.executeMessage(chatID, userMsg)
+	h.executeMessage(chatID, userMsg, hasVoice)
 }
 
 // bufferForwards embeds each forwarded text and stores them in forwardBuf for
@@ -500,7 +502,8 @@ func (h *Handler) transcribeVoice(chatID int64, msg *tgbotapi.Message) string {
 }
 
 // executeMessage sends a prepared LLM message and streams the response back to Telegram.
-func (h *Handler) executeMessage(chatID int64, userMsg llm.Message) {
+// If voiceReply is true and TTS is enabled, the response is also sent as a voice message.
+func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply bool) {
 	typingCtx, stopTyping := context.WithCancel(context.Background())
 	defer stopTyping()
 	go h.sendTypingLoop(chatID, typingCtx)
@@ -615,6 +618,11 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message) {
 	}
 
 	h.sendResponse(chatID, response)
+
+	// If the input was a voice message and TTS is enabled, also send a voice reply.
+	if voiceReply && h.agent.TTSEnabled() {
+		go h.sendVoiceReply(chatID, response)
+	}
 }
 
 // appendTextLinks appends hidden URLs from text_link entities to the message text.
@@ -889,6 +897,64 @@ func (h *Handler) sendPlainMsg(chatID int64, text string) bool {
 	msg := tgbotapi.NewMessage(chatID, text)
 	_, err := h.bot.Send(msg)
 	return err == nil
+}
+
+// sendVoiceReply synthesizes text to speech and sends it as a Telegram voice message.
+func (h *Handler) sendVoiceReply(chatID int64, text string) {
+	// Strip markdown formatting for cleaner speech output.
+	plain := stripMarkdownForTTS(text)
+	if plain == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	audio, err := h.agent.SynthesizeSpeech(ctx, plain)
+	if err != nil {
+		h.logger.Warn("TTS synthesis failed", "err", err, "chat_id", chatID)
+		return
+	}
+	if len(audio) == 0 {
+		return
+	}
+
+	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
+		Name:  "response.ogg",
+		Bytes: audio,
+	})
+	if _, err := h.bot.Send(voice); err != nil {
+		h.logger.Warn("failed to send voice message", "err", err, "chat_id", chatID)
+	}
+}
+
+// stripMarkdownForTTS removes markdown formatting that sounds bad when spoken.
+func stripMarkdownForTTS(s string) string {
+	// Remove code blocks
+	for {
+		start := strings.Index(s, "```")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s[start+3:], "```")
+		if end == -1 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+3+end+3:]
+	}
+	// Remove inline code, bold, italic markers
+	r := strings.NewReplacer(
+		"`", "",
+		"**", "",
+		"__", "",
+		"*", "",
+		"_", "",
+		"#", "",
+		"⚙️ ", "",
+	)
+	s = r.Replace(s)
+	return strings.TrimSpace(s)
 }
 
 func (h *Handler) sendAsFile(chatID int64, text string) {

@@ -101,3 +101,8 @@ web_search:
 filesystem:
   enabled: true
   root: /assistant_context
+
+# Text-to-speech via Edge TTS — replies to voice messages with voice.
+tts:
+  enabled: true
+  voice: ru-RU-DmitryNeural  # also: en-US-EmmaMultilingualNeural, uk-UA-OstapNeural

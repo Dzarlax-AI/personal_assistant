@@ -44,6 +44,7 @@ type Agent struct {
 	webSearch  *WebSearchConfig  // nil = disabled
 	transcribe *TranscribeConfig // nil = disabled
 	filesystem *FilesystemConfig // nil = disabled
+	tts        *TTSConfig        // nil = disabled
 }
 
 func New(router *llm.Router, s store.Store, mcpClient *mcp.Client, compacter *Compacter, sysPrompt string, logger *slog.Logger) *Agent {
@@ -84,6 +85,24 @@ func (a *Agent) EnableWebSearch(cfg WebSearchConfig) {
 // EnableFilesystem activates built-in filesystem tools scoped to cfg.Root.
 func (a *Agent) EnableFilesystem(cfg FilesystemConfig) {
 	a.filesystem = &cfg
+}
+
+// EnableTTS activates text-to-speech via Edge TTS.
+func (a *Agent) EnableTTS(cfg TTSConfig) {
+	a.tts = &cfg
+}
+
+// SynthesizeSpeech converts text to OGG Opus audio. Returns nil if TTS is disabled.
+func (a *Agent) SynthesizeSpeech(ctx context.Context, text string) ([]byte, error) {
+	if a.tts == nil {
+		return nil, fmt.Errorf("TTS not configured")
+	}
+	return a.tts.Synthesize(ctx, text)
+}
+
+// TTSEnabled returns true if text-to-speech is configured.
+func (a *Agent) TTSEnabled() bool {
+	return a.tts != nil
 }
 
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
