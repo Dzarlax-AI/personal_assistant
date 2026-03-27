@@ -99,9 +99,11 @@ func (s *Server) handleVoice(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Read audio body.
+	s.logger.Info("reading body", "content_length", r.ContentLength, "transfer_encoding", r.TransferEncoding)
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize+1))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read body")
+		s.logger.Error("failed to read body", "err", err)
+		writeError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
 		return
 	}
 	if len(body) > maxBodySize {
