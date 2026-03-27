@@ -16,10 +16,10 @@ enum class State : uint8_t {
   ERROR,
 };
 
-// Fixed audio buffer: 48 KB for recording (~1.5s at 16kHz 16bit mono)
-// Plus 44 bytes WAV header. Static allocation avoids heap fragmentation.
+// Fixed audio buffer: 96 KB — used for both recording and playback (not simultaneously).
+// Recording: ~3s at 16kHz 16bit mono. Playback: ~3s of WAV response.
 static const size_t WAV_HEADER_SIZE = 44;
-static const size_t AUDIO_BUF_SIZE = 48 * 1024 + WAV_HEADER_SIZE;
+static const size_t AUDIO_BUF_SIZE = 96 * 1024;
 
 class VoiceClient : public Component {
  public:

@@ -117,7 +117,7 @@ void VoiceClient::do_process_() {
 
   esp_http_client_set_header(client, "Content-Type", "audio/wav");
   esp_http_client_set_header(client, "Authorization", auth_header.c_str());
-  esp_http_client_set_header(client, "Accept", "audio/mpeg");
+  esp_http_client_set_header(client, "Accept", "audio/wav");
 
   // Use open/write/fetch/read instead of perform() to access the response body.
   esp_err_t err = esp_http_client_open(client, total_size);
@@ -150,29 +150,55 @@ void VoiceClient::do_process_() {
     return;
   }
 
-  // Read response body into audio_buf_ (reuse recording buffer).
+  // Stream response directly to speaker — no full buffering needed.
+  set_state_(State::PLAYING);
+  this->spk_->start();
+
+  // Read and play in chunks — supports responses of any length.
+  const size_t chunk_size = 2048;
+  uint8_t chunk_buf[2048];
   size_t total_read = 0;
-  while (total_read < AUDIO_BUF_SIZE) {
-    int read_len = esp_http_client_read(client, (char *)audio_buf_ + total_read, AUDIO_BUF_SIZE - total_read);
+  bool header_skipped = false;
+
+  while (true) {
+    int read_len = esp_http_client_read(client, (char *)chunk_buf, chunk_size);
     if (read_len <= 0) break;
     total_read += read_len;
+
+    uint8_t *data = chunk_buf;
+    size_t data_len = read_len;
+
+    // Skip WAV header in the first chunk.
+    if (!header_skipped) {
+      header_skipped = true;
+      if (data_len > 44 && memcmp(data, "RIFF", 4) == 0) {
+        data += 44;
+        data_len -= 44;
+        ESP_LOGI(TAG, "Skipping WAV header, streaming PCM");
+      }
+    }
+
+    // Feed to speaker in small pieces, wait if buffer is full.
+    size_t offset = 0;
+    while (offset < data_len) {
+      size_t to_write = std::min(data_len - offset, (size_t)512);
+      size_t written = this->spk_->play(data + offset, to_write);
+      if (written > 0) {
+        offset += written;
+      } else {
+        vTaskDelay(pdMS_TO_TICKS(10));
+      }
+    }
   }
+
   esp_http_client_close(client);
   esp_http_client_cleanup(client);
 
-  if (total_read == 0) {
-    ESP_LOGE(TAG, "No audio data in response");
-    set_state_(State::ERROR);
-    return;
-  }
-  ESP_LOGI(TAG, "Received %u bytes of audio", (unsigned)total_read);
-  int read_len = total_read;
+  ESP_LOGI(TAG, "Streamed %u bytes of audio to speaker", (unsigned)total_read);
 
-  // Play response.
-  set_state_(State::PLAYING);
-  this->spk_->start();
-  this->spk_->play(audio_buf_, read_len);
+  // Wait for speaker to finish playing remaining buffer.
   this->spk_->finish();
+  vTaskDelay(pdMS_TO_TICKS(500));
   set_state_(State::IDLE);
 }
 
