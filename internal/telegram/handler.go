@@ -590,7 +590,13 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply b
 				edit := tgbotapi.NewEditMessageText(chatID, streamMsgID, htmlText)
 				edit.ParseMode = tgbotapi.ModeHTML
 				if _, editErr := h.bot.Send(edit); editErr == nil {
-					// Clean up tool status and return — done.
+					h.logger.Info("response sent", "chat_id", chatID, "len", len(response), "mode", "stream")
+					if statusMsgID != 0 {
+						h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
+					}
+					if voiceReply && h.agent.TTSEnabled() {
+						go h.sendVoiceReply(chatID, response)
+					}
 					return
 				}
 			}
@@ -618,6 +624,7 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply b
 	}
 
 	h.sendResponse(chatID, response)
+	h.logger.Info("response sent", "chat_id", chatID, "len", len(response), "mode", "fallback")
 
 	// If the input was a voice message and TTS is enabled, also send a voice reply.
 	if voiceReply && h.agent.TTSEnabled() {
@@ -901,6 +908,12 @@ func (h *Handler) sendPlainMsg(chatID int64, text string) bool {
 
 // sendVoiceReply synthesizes text to speech and sends it as a Telegram voice message.
 func (h *Handler) sendVoiceReply(chatID int64, text string) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error("TTS panic", "err", r, "chat_id", chatID)
+		}
+	}()
+
 	// Strip markdown formatting for cleaner speech output.
 	plain := stripMarkdownForTTS(text)
 	if plain == "" {
@@ -919,12 +932,16 @@ func (h *Handler) sendVoiceReply(chatID int64, text string) {
 		return
 	}
 
+	h.logger.Info("TTS synthesized", "chat_id", chatID, "audio_bytes", len(audio), "text_len", len(plain))
+
 	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
 		Name:  "response.ogg",
 		Bytes: audio,
 	})
 	if _, err := h.bot.Send(voice); err != nil {
 		h.logger.Warn("failed to send voice message", "err", err, "chat_id", chatID)
+	} else {
+		h.logger.Info("voice reply sent", "chat_id", chatID)
 	}
 }
 
