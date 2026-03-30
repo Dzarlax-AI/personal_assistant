@@ -62,6 +62,7 @@ type ollamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []ollamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Think    *bool           `json:"think,omitempty"`
 	Tools    []ollamaTool    `json:"tools,omitempty"`
 	Options  *ollamaOptions  `json:"options,omitempty"`
 }
@@ -94,8 +95,7 @@ type ollamaFunctionDef struct {
 }
 
 type ollamaOptions struct {
-	NumPredict int   `json:"num_predict,omitempty"`
-	Think      *bool `json:"think,omitempty"`
+	NumPredict int `json:"num_predict,omitempty"`
 }
 
 type ollamaResponse struct {
@@ -108,16 +108,15 @@ type ollamaResponse struct {
 func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
 	ollamaMsgs := p.buildMessages(messages, systemPrompt)
 
-	opts := &ollamaOptions{NumPredict: p.maxTokens}
-	if p.noThink {
-		f := false
-		opts.Think = &f
-	}
 	req := ollamaRequest{
 		Model:    p.model,
 		Messages: ollamaMsgs,
 		Stream:   false,
-		Options:  opts,
+		Options:  &ollamaOptions{NumPredict: p.maxTokens},
+	}
+	if p.noThink {
+		f := false
+		req.Think = &f
 	}
 	if len(tools) > 0 {
 		req.Tools = buildOllamaTools(tools)
