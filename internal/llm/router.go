@@ -24,8 +24,9 @@ type RouterConfig struct {
 	Reasoner         string // level 3: complex reasoning
 	Fallback         string
 	Multimodal       string
-	Classifier       string // provider used for complexity classification
-	ClassifierMinLen int    // min rune length to run classifier; 0 = disabled
+	Classifier        string // provider used for complexity classification
+	ClassifierMinLen  int    // min rune length to run classifier; 0 = always; <0 = disabled
+	ClassifierTimeout int    // seconds; default 15
 }
 
 // routingOverrides is the persisted subset of RouterConfig (JSON file).
@@ -417,7 +418,11 @@ func (r *Router) classify(ctx context.Context, text string) int {
 	if provider == nil {
 		return 2
 	}
-	classifierCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	timeout := time.Duration(r.cfg.ClassifierTimeout) * time.Second
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	classifierCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Truncate to save tokens — classifier only needs the beginning to judge complexity.

@@ -94,9 +94,10 @@ type RoutingConfig struct {
 	Fallback            string `yaml:"fallback"`
 	Multimodal          string `yaml:"multimodal"`
 	Reasoner            string `yaml:"reasoner"`              // level 3: complex reasoning
-	Classifier          string `yaml:"classifier"`            // model that rates complexity 1/2/3
+	Classifier          string `yaml:"classifier"`             // model that rates complexity 1/2/3
+	ClassifierTimeout   int    `yaml:"classifier_timeout"`    // seconds; default 15
 	CompactionModel     string `yaml:"compaction_model"`
-	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = disabled
+	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = always; <0 = disabled
 }
 
 // LoadMCPServers loads mcp.json in Claude Desktop format.

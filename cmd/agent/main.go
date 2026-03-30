@@ -129,8 +129,9 @@ func main() {
 		Fallback:         cfg.Routing.Fallback,
 		Multimodal:       multimodalKey,
 		Reasoner:         reasonerKey,
-		Classifier:       cfg.Routing.Classifier,
-		ClassifierMinLen: cfg.Routing.ClassifierMinLength,
+		Classifier:        cfg.Routing.Classifier,
+		ClassifierMinLen:  cfg.Routing.ClassifierMinLength,
+		ClassifierTimeout: cfg.Routing.ClassifierTimeout,
 	})
 
 	// Warn about routing roles that reference missing providers

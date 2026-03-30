@@ -75,9 +75,9 @@ models:
     base_url: http://host.docker.internal:11434
     max_tokens: 64
 
-  # Ollama local — local model for simple tasks. Supports tools.
+  # Ollama local — simple tasks via Ollama Cloud model (routed through local Ollama).
   ollama-local:
-    model: qwen3:0.6b
+    model: qwen3.5:cloud
     base_url: http://host.docker.internal:11434
     max_tokens: 4096
 
@@ -90,13 +90,14 @@ models:
     max_tokens: 120
 
 routing:
-  local: deepseek              # level 1: simple tasks → DeepSeek
+  local: ollama-local          # level 1: simple tasks → Ollama Cloud qwen3.5:397b
   default: deepseek            # level 2: moderate tasks → DeepSeek
   reasoner: claude             # level 3: complex reasoning → Claude
   fallback: gemini-flash-lite
   multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)
   compaction_model: deepseek
   classifier: ollama           # gemma3:1b rates complexity 1/2/3
+  classifier_timeout: 15      # seconds
   classifier_min_length: 0    # 0 = always classify; >0 = min chars; <0 = disabled
 
 tool_filter:
