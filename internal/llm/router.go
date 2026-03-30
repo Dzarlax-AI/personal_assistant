@@ -12,10 +12,17 @@ import (
 	"time"
 )
 
-const classifierPrompt = `Rate the complexity of this message. Reply with ONLY a single digit:
-1 — simple question, chitchat, translation, short factual lookup
-2 — moderate task: summarization, code generation, multi-step instructions, analysis
-3 — hard problem: math proof, complex debugging, deep multi-step reasoning, research`
+const classifierPrompt = `You are a classifier. Output ONLY a single digit 1, 2, or 3.
+
+1 = simple (greeting, chitchat, factual lookup, translation)
+2 = moderate (summarization, code, analysis, multi-step)
+3 = hard (math proof, deep reasoning, complex debugging)
+
+Examples:
+User: hello → 1
+User: what is 2+2 → 1
+User: write a REST API in Go → 2
+User: prove Fermat last theorem → 3`
 
 // RouterConfig holds the keys into the providers map for special roles.
 type RouterConfig struct {

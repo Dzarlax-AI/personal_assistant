@@ -69,9 +69,9 @@ models:
     max_tokens: 8192
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
-  # Ollama — classifier model (gemma3:1b). No tools needed for classification.
+  # Ollama — classifier model (qwen3:0.6b). Good instruction following for classification.
   ollama:
-    model: gemma3:1b
+    model: qwen3:0.6b
     base_url: http://host.docker.internal:11434
     max_tokens: 64
 
