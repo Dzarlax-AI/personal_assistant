@@ -90,8 +90,8 @@ models:
     max_tokens: 120
 
 routing:
-  local: ollama-local          # level 1: simple tasks → local qwen3.5:4b
-  default: deepseek            # level 2: moderate tasks → cloud DeepSeek
+  local: deepseek              # level 1: simple tasks → DeepSeek
+  default: deepseek            # level 2: moderate tasks → DeepSeek
   reasoner: claude             # level 3: complex reasoning → Claude
   fallback: gemini-flash-lite
   multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)

@@ -365,7 +365,7 @@ func (r *Router) pick(ctx context.Context, messages []Message) Provider {
 	// ClassifierMinLen < 0: disabled entirely.
 	if cfg.ClassifierMinLen >= 0 && r.get(cfg.Classifier) != nil {
 		text := lastUserText(messages)
-		if cfg.ClassifierMinLen == 0 || len([]rune(text)) >= cfg.ClassifierMinLen {
+		if text != "" && (cfg.ClassifierMinLen == 0 || len([]rune(text)) >= cfg.ClassifierMinLen) {
 			level := r.classify(ctx, text)
 			switch level {
 			case 1:
