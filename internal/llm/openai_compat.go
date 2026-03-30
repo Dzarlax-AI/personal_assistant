@@ -33,8 +33,8 @@ type openAICompatProvider struct {
 }
 
 func newOpenAICompat(cfg config.ModelConfig, defaultBaseURL, providerName string, vision ...bool) (*openAICompatProvider, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("%s: api_key is required", providerName)
+	if cfg.APIKey == "" && cfg.BaseURL == "" {
+		return nil, fmt.Errorf("%s: api_key or base_url is required", providerName)
 	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {

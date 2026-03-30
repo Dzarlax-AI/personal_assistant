@@ -4,7 +4,7 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 ## Features
 
-- **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner
+- **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner (supports local models via llama.cpp server)
 - **Claude via bridge** — use Claude (Anthropic Max subscription) as a provider through a lightweight host-side bridge service that wraps `claude -p` CLI; no separate API key needed
 - **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
 - **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline; replies include both text and a voice message via Edge TTS
@@ -213,12 +213,20 @@ models:
   #   api_key: ${CLAUDE_BRIDGE_TOKEN}
   #   max_tokens: 120              # timeout in seconds
 
+  # Local model via llama.cpp server (OpenAI-compatible API).
+  # No API key needed — only base_url and model.
+  # local:
+  #   provider: local
+  #   model: gemma-3n-E2B
+  #   max_tokens: 64
+  #   base_url: http://classifier:8080/v1
+
 routing:
   default: deepseek          # primary model — can be any configured model name
   fallback: gemini-flash     # also used for multimodal
   multimodal: gemini-flash
   reasoner: deepseek-r1
-  classifier: deepseek       # model for reasoning detection; omit to disable
+  classifier: local          # local model for reasoning detection; omit to disable
   classifier_min_length: 100 # min chars to run classifier; 0 = disabled
   compaction_model: deepseek
 
@@ -372,7 +380,7 @@ esphome run atom-echo.yaml            # compile + flash via USB
 | 3 | `primary` | Default for all other messages |
 | 4 | `fallback` | Primary unavailable (5xx / 429 / network error) |
 
-The classifier is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable.
+The classifier is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable. The classifier can run on a local model (e.g. Gemma 3n 270M via llama.cpp server) for zero-latency, zero-cost routing — configure `local` provider and set `classifier: local`.
 
 All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
 

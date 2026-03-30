@@ -82,6 +82,7 @@ type ModelsConfig struct {
 	QwenMax         ModelConfig `yaml:"qwen-max"`
 	Ollama          ModelConfig `yaml:"ollama"`
 	Claude          ModelConfig `yaml:"claude"`
+	Local           ModelConfig `yaml:"local"`
 }
 
 

@@ -48,6 +48,7 @@ flowchart LR
 - `openai_compat.go` — shared OpenAI-compatible implementation using raw `net/http` (no go-openai). `buildMessages(messages, systemPrompt, vision bool)` serialises messages with full control: assistant messages with `tool_calls` and empty content use `"content": null` (not omitted) to satisfy all provider APIs. `image_url` parts are replaced with `[image]` for non-vision providers; `input_audio` parts likewise. Defines `APIError{StatusCode, Message}` for fallback routing.
 - `ollama.go` — native Ollama provider using `/api/chat` protocol (not OpenAI-compat). Supports Ollama Cloud (`https://ollama.com`) and local instances. Handles tool calling (Ollama returns `arguments` as object → serialised to JSON string; generates `call_N` IDs since Ollama omits them). Multimodal: base64 images sent via `images[]` field (strips data URI prefix). `stream: false` for synchronous responses.
 - `claude_bridge.go` — Claude Bridge provider. Sends prompts to `claude-bridge` HTTP service on the host, which wraps `claude -p` CLI. `buildPrompt(messages, systemPrompt)` flattens multi-turn history into `User: ... / Assistant: ...` text format (CLI doesn't support multi-turn). Multimodal parts replaced with `[image]`/`[audio]`/`[document]` placeholders. Returns `APIError` on bridge errors for fallback routing. No tool calling — Claude CLI handles MCP tools itself via `--project-dir`.
+- `local.go` — local model provider via llama.cpp server (OpenAI-compatible API). No API key required — only `base_url` and `model`. Used for classifier routing with lightweight models like Gemma 3n 270M.
 - `router.go` — thread-safe routing config (`mu` protects both `override` and `cfg`). Priority: multimodal → override → classifier → reasoner → primary → fallback on 5xx/429/network. `SetRole(role, model)` + `SetClassifierMinLen(n)` allow runtime changes; `saveOverrides()` persists to `persistPath` (JSON) on every change; `LoadPersistedOverrides()` applies saved values on startup. Classifier has 5 s timeout; input truncated to 500 chars; logs routing decisions at Info when routed to reasoner.
 - All providers are optional in `main.go` — any configured model can be `routing.default`. The bot exits with a clear error if the default provider is missing.
 
@@ -190,7 +191,7 @@ Bot (Docker) → POST /ask → claude-bridge (host:9900) → claude -p → respo
 
 1. Implement `llm.Provider` interface (or reuse `openai_compat.go` if OpenAI-compatible)
 2. Add `ModelConfig` with `base_url` to `config.yaml` and `ModelsConfig` struct
-3. Wire in `main.go` with `if cfg.Models.X.APIKey != "" { addProvider("key", ...) }`
+3. Wire in `main.go` with `if cfg.Models.X.APIKey != "" { addProvider("key", ...) }` (for local models without API key, check `BaseURL` instead)
 4. Set as `routing.default` or a routing role
 
 ### Adding multimodal content types

@@ -92,6 +92,10 @@ func main() {
 		p, e := llm.NewClaudeBridge(cfg.Models.Claude)
 		addProvider("claude", p, e)
 	}
+	if cfg.Models.Local.BaseURL != "" {
+		p, e := llm.NewLocal(cfg.Models.Local)
+		addProvider("local", p, e)
+	}
 
 	// Ensure the default routing provider is available.
 	if providers[cfg.Routing.Default] == nil {

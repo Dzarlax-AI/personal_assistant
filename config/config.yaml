@@ -69,6 +69,14 @@ models:
     max_tokens: 8192
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
+  # Local model via llama.cpp server (OpenAI-compatible API).
+  # Used as classifier for routing decisions. No API key needed.
+  local:
+    provider: local
+    model: gemma-3n-E2B
+    max_tokens: 64
+    base_url: http://classifier:8080/v1
+
   # Claude via bridge (host service wrapping `claude -p` CLI).
   # Requires claude-bridge running on host:9900.
   # max_tokens here is used as timeout_sec for the CLI call.
@@ -83,7 +91,7 @@ routing:
   multimodal: gemini-flash
   reasoner: claude
   compaction_model: deepseek
-  classifier: qwen-flash
+  classifier: local
   classifier_min_length: 100
 
 tool_filter:
