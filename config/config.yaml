@@ -74,6 +74,7 @@ models:
     model: qwen3:0.6b
     base_url: http://host.docker.internal:11434
     max_tokens: 64
+    no_think: true
 
   # Ollama local — simple tasks via Ollama Cloud model (routed through local Ollama).
   ollama-local:

@@ -23,6 +23,7 @@ type ollamaProvider struct {
 	maxTokens int
 	provName  string
 	vision    bool
+	noThink   bool
 }
 
 // NewOllama creates a provider for a local Ollama instance.
@@ -43,6 +44,7 @@ func NewOllama(cfg config.ModelConfig) (*ollamaProvider, error) {
 		maxTokens: maxTokens,
 		provName:  "ollama",
 		vision:    cfg.Vision,
+		noThink:   cfg.NoThink,
 	}, nil
 }
 
@@ -92,7 +94,8 @@ type ollamaFunctionDef struct {
 }
 
 type ollamaOptions struct {
-	NumPredict int `json:"num_predict,omitempty"`
+	NumPredict int   `json:"num_predict,omitempty"`
+	Think      *bool `json:"think,omitempty"`
 }
 
 type ollamaResponse struct {
@@ -105,11 +108,16 @@ type ollamaResponse struct {
 func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
 	ollamaMsgs := p.buildMessages(messages, systemPrompt)
 
+	opts := &ollamaOptions{NumPredict: p.maxTokens}
+	if p.noThink {
+		f := false
+		opts.Think = &f
+	}
 	req := ollamaRequest{
 		Model:    p.model,
 		Messages: ollamaMsgs,
 		Stream:   false,
-		Options:  &ollamaOptions{NumPredict: p.maxTokens},
+		Options:  opts,
 	}
 	if len(tools) > 0 {
 		req.Tools = buildOllamaTools(tools)

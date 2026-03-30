@@ -69,7 +69,8 @@ type ModelConfig struct {
 	APIKey    string `yaml:"api_key"`
 	MaxTokens int    `yaml:"max_tokens"`
 	BaseURL   string `yaml:"base_url"`
-	Vision    bool   `yaml:"vision"` // true if the model supports image input
+	Vision    bool   `yaml:"vision"`    // true if the model supports image input
+	NoThink   bool   `yaml:"no_think"`  // disable thinking mode (qwen3)
 }
 
 type ModelsConfig struct {
