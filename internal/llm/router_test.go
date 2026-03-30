@@ -149,9 +149,9 @@ func TestRouter_MultimodalPriority(t *testing.T) {
 	}
 }
 
-// TestRouter_ClassifierRoutesToReasoner: classifier возвращает "yes" → reasoner используется.
-func TestRouter_ClassifierRoutesToReasoner(t *testing.T) {
-	classifier := &mockProvider{name: "classifier", resp: Response{Content: "yes"}}
+// TestRouter_ClassifierLevel3: classifier возвращает "3" → reasoner используется.
+func TestRouter_ClassifierLevel3(t *testing.T) {
+	classifier := &mockProvider{name: "classifier", resp: Response{Content: "3"}}
 	reasoner := &mockProvider{name: "reasoner", resp: Response{Content: "deep answer"}}
 	primary := &mockProvider{name: "primary", resp: Response{Content: "simple answer"}}
 
@@ -176,11 +176,37 @@ func TestRouter_ClassifierRoutesToReasoner(t *testing.T) {
 	}
 }
 
-// TestRouter_ClassifierNo: classifier возвращает "no" → primary используется.
-func TestRouter_ClassifierNo(t *testing.T) {
-	classifier := &mockProvider{name: "classifier", resp: Response{Content: "no"}}
+// TestRouter_ClassifierLevel1: classifier возвращает "1" → local используется.
+func TestRouter_ClassifierLevel1(t *testing.T) {
+	classifier := &mockProvider{name: "classifier", resp: Response{Content: "1"}}
+	local := &mockProvider{name: "local", resp: Response{Content: "local answer"}}
+	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud answer"}}
+
+	r := newTestRouter(RouterConfig{
+		Local:            "local",
+		Primary:          "primary",
+		Classifier:       "classifier",
+		ClassifierMinLen: 5,
+	}, map[string]Provider{
+		"local":      local,
+		"primary":    primary,
+		"classifier": classifier,
+	})
+
+	resp, err := r.Chat(context.Background(), []Message{{Role: "user", Content: "what time is it"}}, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "local answer" {
+		t.Errorf("expected local, got %q", resp.Content)
+	}
+}
+
+// TestRouter_ClassifierLevel2: classifier возвращает "2" → primary используется.
+func TestRouter_ClassifierLevel2(t *testing.T) {
+	classifier := &mockProvider{name: "classifier", resp: Response{Content: "2"}}
 	reasoner := &mockProvider{name: "reasoner"}
-	primary := &mockProvider{name: "primary", resp: Response{Content: "simple answer"}}
+	primary := &mockProvider{name: "primary", resp: Response{Content: "cloud answer"}}
 
 	r := newTestRouter(RouterConfig{
 		Primary:          "primary",
@@ -193,15 +219,15 @@ func TestRouter_ClassifierNo(t *testing.T) {
 		"classifier": classifier,
 	})
 
-	resp, err := r.Chat(context.Background(), []Message{{Role: "user", Content: "what time is it"}}, "", nil)
+	resp, err := r.Chat(context.Background(), []Message{{Role: "user", Content: "summarize this article about AI"}}, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Content != "simple answer" {
+	if resp.Content != "cloud answer" {
 		t.Errorf("expected primary, got %q", resp.Content)
 	}
 	if reasoner.calls != 0 {
-		t.Errorf("reasoner should not be called when classifier returns no")
+		t.Errorf("reasoner should not be called for level 2")
 	}
 }
 
