@@ -1079,14 +1079,16 @@ func routingMenuText(cfg llm.RouterConfig) string {
 	}
 	return fmt.Sprintf(
 		"⚙️ *Routing Configuration*\n\n"+
-			"Primary: `%s`\n"+
+			"Local \\(1\\): `%s`\n"+
+			"Primary \\(2\\): `%s`\n"+
+			"Reasoner \\(3\\): `%s`\n"+
 			"Fallback: `%s`\n"+
-			"Reasoner: `%s`\n"+
 			"Classifier: `%s` \\(%s\\)\n"+
 			"Multimodal: `%s`",
+		escapeMarkdown(cfg.Local),
 		escapeMarkdown(cfg.Primary),
-		escapeMarkdown(cfg.Fallback),
 		escapeMarkdown(cfg.Reasoner),
+		escapeMarkdown(cfg.Fallback),
 		escapeMarkdown(cfg.Classifier),
 		classifierStatus,
 		escapeMarkdown(cfg.Multimodal),
@@ -1096,15 +1098,18 @@ func routingMenuText(cfg llm.RouterConfig) string {
 func routingMenuKeyboard(cfg llm.RouterConfig) tgbotapi.InlineKeyboardMarkup {
 	return tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✏️ Primary: "+cfg.Primary, "rt:role:primary"),
+			tgbotapi.NewInlineKeyboardButtonData("1️⃣ Local: "+cfg.Local, "rt:role:local"),
+			tgbotapi.NewInlineKeyboardButtonData("2️⃣ Primary: "+cfg.Primary, "rt:role:primary"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("3️⃣ Reasoner: "+cfg.Reasoner, "rt:role:reasoner"),
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Fallback: "+cfg.Fallback, "rt:role:fallback"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✏️ Reasoner: "+cfg.Reasoner, "rt:role:reasoner"),
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Classifier: "+cfg.Classifier, "rt:role:classifier"),
+			tgbotapi.NewInlineKeyboardButtonData("✏️ Multimodal: "+cfg.Multimodal, "rt:role:multimodal"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("✏️ Multimodal: "+cfg.Multimodal, "rt:role:multimodal"),
 			tgbotapi.NewInlineKeyboardButtonData("✏️ Classifier threshold", "rt:min"),
 		),
 	)
@@ -1235,6 +1240,7 @@ func (h *Handler) NotifyMissingRouting() {
 	}
 
 	roles := []struct{ name, model string }{
+		{"local", cfg.Local},
 		{"fallback", cfg.Fallback},
 		{"reasoner", cfg.Reasoner},
 		{"classifier", cfg.Classifier},
@@ -1258,6 +1264,8 @@ func (h *Handler) NotifyMissingRouting() {
 // roleValue returns the current model name for a given routing role.
 func roleValue(cfg llm.RouterConfig, role string) string {
 	switch role {
+	case "local":
+		return cfg.Local
 	case "primary":
 		return cfg.Primary
 	case "fallback":
