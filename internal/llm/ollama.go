@@ -72,9 +72,11 @@ type ollamaMessage struct {
 	Content   string            `json:"content"`
 	Images    []string          `json:"images,omitempty"`
 	ToolCalls []ollamaToolCall  `json:"tool_calls,omitempty"`
+	ToolName  string            `json:"tool_name,omitempty"`
 }
 
 type ollamaToolCall struct {
+	ID       string             `json:"id,omitempty"`
 	Function ollamaFunctionCall `json:"function"`
 }
 
@@ -166,8 +168,12 @@ func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPro
 		if err != nil {
 			argsJSON = []byte("{}")
 		}
+		callID := tc.ID
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d", i)
+		}
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
-			ID:        fmt.Sprintf("call_%d", i),
+			ID:        callID,
 			Name:      tc.Function.Name,
 			Arguments: string(argsJSON),
 		})
@@ -180,10 +186,27 @@ func (p *ollamaProvider) buildMessages(messages []Message, systemPrompt string) 
 	if systemPrompt != "" {
 		msgs = append(msgs, ollamaMessage{Role: "system", Content: systemPrompt})
 	}
+	// Build a map from tool call ID → tool name for resolving tool results.
+	toolCallNames := make(map[string]string)
+	for _, m := range messages {
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" {
+				toolCallNames[tc.ID] = tc.Name
+			}
+		}
+	}
+
 	for _, m := range messages {
 		msg := ollamaMessage{
 			Role:    m.Role,
 			Content: m.Content,
+		}
+
+		// Ollama uses "tool_name" instead of "tool_call_id" for tool results.
+		if m.Role == "tool" && m.ToolCallID != "" {
+			if name, ok := toolCallNames[m.ToolCallID]; ok {
+				msg.ToolName = name
+			}
 		}
 
 		// Handle multimodal parts.

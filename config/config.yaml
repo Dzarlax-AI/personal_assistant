@@ -76,11 +76,13 @@ models:
     max_tokens: 64
     no_think: true
 
-  # Ollama local — simple tasks via Ollama Cloud model (routed through local Ollama).
-  ollama-local:
-    model: qwen3.5:cloud
-    base_url: http://host.docker.internal:11434
+  # Ollama Cloud — Qwen 3.5 via Ollama Cloud API.
+  ollama-cloud:
+    model: qwen3.5:397b-cloud
+    base_url: https://api.ollama.com
+    api_key: ${OLLAMA_API_KEY}
     max_tokens: 4096
+    vision: true
 
   # Claude via bridge (host service wrapping `claude -p` CLI).
   # Requires claude-bridge running on host:9900.
@@ -91,8 +93,8 @@ models:
     max_tokens: 120
 
 routing:
-  local: deepseek              # level 1: simple tasks → DeepSeek
-  default: deepseek            # level 2: moderate tasks → DeepSeek
+  local: ollama-cloud           # level 1: simple tasks → Qwen via Ollama Cloud
+  default: ollama-cloud         # level 2: moderate tasks → Qwen via Ollama Cloud
   reasoner: claude             # level 3: complex reasoning → Claude
   fallback: gemini-flash-lite
   multimodal: gemini-flash     # vision/audio fallback (used when primary lacks vision)

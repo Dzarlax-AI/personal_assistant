@@ -21,3 +21,4 @@ openspec
 config/routing.json
 migrate-to-pg
 bin/
+/agent

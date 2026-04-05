@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -20,7 +21,7 @@ func encodeBase64(data []byte) string {
 }
 
 const (
-	maxToolIterations = 5
+	maxToolIterations = 10
 	semanticRecentN   = 10 // always include last N messages in current session
 	semanticTopK      = 20 // up to K older turns selected by similarity within session
 
@@ -170,29 +171,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			ToolCalls: resp.ToolCalls,
 		})
 
-		for _, tc := range resp.ToolCalls {
-			if onToolCall != nil {
-				onToolCall(tc.Name)
-			}
-			a.logger.Info("tool call", "tool", tc.Name)
-			result, err := a.callTool(ctx, tc.Name, tc.Arguments)
-			if err != nil {
-				a.logger.Warn("tool call failed", "tool", tc.Name, "err", err)
-				result = fmt.Sprintf("Error: %s", err.Error())
-			}
-			if len(result) > toolResultSummarizeThreshold {
-				if summarized, sErr := a.summarizeToolResult(ctx, tc.Name, result); sErr == nil {
-					a.logger.Info("tool result summarized", "tool", tc.Name, "original_len", len(result), "summary_len", len(summarized))
-					result = summarized
-				}
-			}
-			a.logger.Info("tool result", "tool", tc.Name, "result_len", len(result))
-			a.store.AddMessage(chatID, llm.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
-		}
+		a.executeToolCalls(ctx, chatID, resp.ToolCalls, onToolCall)
 	}
 
 	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
@@ -279,11 +258,36 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 			ToolCalls: toolCalls,
 		})
 
-		for _, tc := range toolCalls {
-			if onToolCall != nil {
-				onToolCall(tc.Name)
-			}
-			a.logger.Info("tool call", "tool", tc.Name)
+		a.executeToolCalls(ctx, chatID, toolCalls, onToolCall)
+	}
+
+	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
+}
+
+// SupportsStreaming returns true if the current provider supports streaming.
+func (a *Agent) SupportsStreaming() bool {
+	return a.router.SupportsStreaming()
+}
+
+// executeToolCalls runs tool calls in parallel and stores results in order.
+func (a *Agent) executeToolCalls(ctx context.Context, chatID int64, toolCalls []llm.ToolCall, onToolCall func(string)) {
+	type toolResult struct {
+		tc     llm.ToolCall
+		result string
+	}
+
+	results := make([]toolResult, len(toolCalls))
+	var wg sync.WaitGroup
+
+	for i, tc := range toolCalls {
+		if onToolCall != nil {
+			onToolCall(tc.Name)
+		}
+		a.logger.Info("tool call", "tool", tc.Name)
+
+		wg.Add(1)
+		go func(idx int, tc llm.ToolCall) {
+			defer wg.Done()
 			result, err := a.callTool(ctx, tc.Name, tc.Arguments)
 			if err != nil {
 				a.logger.Warn("tool call failed", "tool", tc.Name, "err", err)
@@ -296,20 +300,20 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 				}
 			}
 			a.logger.Info("tool result", "tool", tc.Name, "result_len", len(result))
-			a.store.AddMessage(chatID, llm.Message{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-			})
-		}
+			results[idx] = toolResult{tc: tc, result: result}
+		}(i, tc)
 	}
 
-	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
-}
+	wg.Wait()
 
-// SupportsStreaming returns true if the current provider supports streaming.
-func (a *Agent) SupportsStreaming() bool {
-	return a.router.SupportsStreaming()
+	// Store results in original order.
+	for _, r := range results {
+		a.store.AddMessage(chatID, llm.Message{
+			Role:       "tool",
+			Content:    r.result,
+			ToolCallID: r.tc.ID,
+		})
+	}
 }
 
 func (a *Agent) ClearHistory(chatID int64) {
