@@ -46,6 +46,8 @@ type routingOverrides struct {
 	Reasoner         string `json:"reasoner,omitempty"`
 	Classifier       string `json:"classifier,omitempty"`
 	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
+	OllamaCloudModel  string `json:"ollama_cloud_model,omitempty"`
+	OllamaCloudVision *bool  `json:"ollama_cloud_vision,omitempty"`
 }
 
 // Router selects the appropriate LLM provider based on context.
@@ -121,6 +123,13 @@ func (r *Router) LoadPersistedOverrides() error {
 	if ov.ClassifierMinLen != nil {
 		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
 	}
+	// Restore Ollama Cloud model choice.
+	if ov.OllamaCloudModel != "" {
+		if oc := r.findOllamaCloud(); oc != nil {
+			vision := ov.OllamaCloudVision != nil && *ov.OllamaCloudVision
+			oc.SetModelAndCaps(ov.OllamaCloudModel, vision)
+		}
+	}
 	return nil
 }
 
@@ -138,6 +147,17 @@ func (r *Router) saveOverrides() {
 		Reasoner:         r.cfg.Reasoner,
 		Classifier:       r.cfg.Classifier,
 		ClassifierMinLen: &minLen,
+	}
+	// Include Ollama Cloud model if present.
+	if oc := r.findOllamaCloud(); oc != nil {
+		if m, ok := oc.OllamaCloudModel(); ok {
+			ov.OllamaCloudModel = m
+			v := false
+			if vp, ok2 := oc.(interface{ SupportsVision() bool }); ok2 {
+				v = vp.SupportsVision()
+			}
+			ov.OllamaCloudVision = &v
+		}
 	}
 	data, err := json.Marshal(ov)
 	if err != nil {
@@ -351,30 +371,44 @@ func (r *Router) ProviderNames() []string {
 	return names
 }
 
-// AddProvider registers a new provider at runtime (e.g. dynamic Ollama Cloud models).
-func (r *Router) AddProvider(key string, p Provider) {
-	r.mu.Lock()
-	r.providers[key] = p
-	r.mu.Unlock()
+// ollamaCloudSetter is implemented by Ollama providers that can switch models at runtime.
+type ollamaCloudSetter interface {
+	SetModelAndCaps(model string, vision bool)
+	OllamaCloudModel() (string, bool)
 }
 
-// OllamaCloudConfigProvider is implemented by Ollama providers to expose their base config.
-type OllamaCloudConfigProvider interface {
-	OllamaBaseConfig() (baseURL, apiKey string, maxTokens int)
-}
-
-// FindOllamaCloudConfig searches providers for the first one whose base URL points
-// to Ollama Cloud (api.ollama.com). Returns the base config for creating dynamic providers.
-func (r *Router) FindOllamaCloudConfig() (baseURL, apiKey string, maxTokens int, found bool) {
+// findOllamaCloud returns the first Ollama Cloud provider (base URL contains "ollama.com").
+func (r *Router) findOllamaCloud() ollamaCloudSetter {
 	for _, p := range r.providers {
-		if ocp, ok := p.(OllamaCloudConfigProvider); ok {
-			bu, ak, mt := ocp.OllamaBaseConfig()
-			if strings.Contains(bu, "ollama.com") {
-				return bu, ak, mt, true
+		if oc, ok := p.(ollamaCloudSetter); ok {
+			if _, isCloud := oc.OllamaCloudModel(); isCloud {
+				return oc
 			}
 		}
 	}
-	return "", "", 0, false
+	return nil
+}
+
+// OllamaCloudModelName returns the current model of the Ollama Cloud provider,
+// or ("", false) if no such provider is configured.
+func (r *Router) OllamaCloudModelName() (string, bool) {
+	if oc := r.findOllamaCloud(); oc != nil {
+		return oc.OllamaCloudModel()
+	}
+	return "", false
+}
+
+// SetOllamaCloudModel changes the model on the Ollama Cloud provider and persists the choice.
+func (r *Router) SetOllamaCloudModel(model string, vision bool) bool {
+	oc := r.findOllamaCloud()
+	if oc == nil {
+		return false
+	}
+	oc.SetModelAndCaps(model, vision)
+	r.mu.Lock()
+	r.saveOverrides()
+	r.mu.Unlock()
+	return true
 }
 
 func (r *Router) pick(ctx context.Context, messages []Message) Provider {

@@ -760,12 +760,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 			if mode == "" {
 				mode = "auto"
 			}
-			modelDisplay := h.agent.ModelName()
-			// If override is a dynamic ollama cloud key, show it more clearly.
-			if strings.HasPrefix(override, "ollama-cloud:") {
-				modelDisplay = "ollama/" + strings.TrimPrefix(override, "ollama-cloud:")
-			}
-			h.send(chatID, fmt.Sprintf("Model: `%s` \\(override: %s\\)\n\n/model list — available models", escapeMarkdown(modelDisplay), escapeMarkdown(mode)))
+			h.send(chatID, fmt.Sprintf("Model: `%s` \\(override: %s\\)\n\n/model list — available models", escapeMarkdown(h.agent.ModelName()), escapeMarkdown(mode)))
 		case "list":
 			names := h.agent.ListModels()
 			var sb strings.Builder
@@ -775,20 +770,24 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 			}
 			sb.WriteString("\nUse `/model <name>` to switch\\.")
 
-			// Append Ollama Cloud section if an Ollama Cloud provider is configured.
-			if _, _, _, ok := h.agent.OllamaCloudBaseConfig(); ok {
+			// Append Ollama Cloud section if a cloud provider is configured.
+			if currentCloud, ok := h.agent.OllamaCloudModelName(); ok {
 				cloudModels, err := llm.FetchOllamaCloudModels()
 				if err != nil {
 					h.logger.Warn("failed to fetch Ollama Cloud models", "err", err)
 				}
 				if len(cloudModels) > 0 {
-					sb.WriteString("\n\n*Ollama Cloud:*")
+					sb.WriteString(fmt.Sprintf("\n\n*Ollama Cloud* \\(current: `%s`\\):", escapeMarkdown(currentCloud)))
 					msg := tgbotapi.NewMessage(chatID, sb.String())
 					msg.ParseMode = tgbotapi.ModeMarkdownV2
 					var rows [][]tgbotapi.InlineKeyboardButton
 					var row []tgbotapi.InlineKeyboardButton
-					for i, m := range cloudModels {
-						row = append(row, tgbotapi.NewInlineKeyboardButtonData(m, "model_ollama_cloud:"+m))
+					for i, cm := range cloudModels {
+						label := cm.Name
+						if cm.Name == currentCloud {
+							label = "✓ " + label
+						}
+						row = append(row, tgbotapi.NewInlineKeyboardButtonData(label, "model_ollama_cloud:"+cm.Name))
 						if len(row) == 3 || i == len(cloudModels)-1 {
 							rows = append(rows, row)
 							row = nil
@@ -1272,32 +1271,31 @@ func (h *Handler) handleCallbackQuery(q *tgbotapi.CallbackQuery) {
 
 	case strings.HasPrefix(data, "model_ollama_cloud:"):
 		modelName := strings.TrimPrefix(data, "model_ollama_cloud:")
-		baseURL, apiKey, maxTokens, ok := h.agent.OllamaCloudBaseConfig()
-		if !ok {
+		// Fetch capabilities for the selected model.
+		caps, err := llm.FetchOllamaModelCaps(modelName)
+		if err != nil {
+			h.logger.Warn("failed to fetch model capabilities", "model", modelName, "err", err)
+		}
+		vision := sliceContains(caps, "vision")
+		tools := sliceContains(caps, "tools")
+
+		if !h.agent.SetOllamaCloudModel(modelName, vision) {
 			h.sendPlain(chatID, "No Ollama Cloud provider configured.")
 			return
 		}
-		p, err := llm.NewOllama(config.ModelConfig{
-			Model:     modelName,
-			BaseURL:   baseURL,
-			APIKey:    apiKey,
-			MaxTokens: maxTokens,
-			Vision:    true,
-		})
-		if err != nil {
-			h.logger.Warn("failed to create Ollama Cloud provider", "model", modelName, "err", err)
-			h.sendPlain(chatID, "Error creating provider: "+err.Error())
-			return
+		h.logger.Info("switched Ollama Cloud model", "model", modelName, "vision", vision, "tools", tools)
+
+		var capsBadges string
+		if vision {
+			capsBadges += " vision"
 		}
-		key := "ollama-cloud:" + modelName
-		h.agent.AddModel(key, p)
-		if err := h.agent.SetModel(key); err != nil {
-			h.logger.Warn("failed to set Ollama Cloud model", "model", modelName, "err", err)
-			h.sendPlain(chatID, "Error switching model: "+err.Error())
-			return
+		if tools {
+			capsBadges += " tools"
 		}
-		h.logger.Info("switched to Ollama Cloud model", "model", modelName)
-		h.send(chatID, fmt.Sprintf("Switched to ollama cloud: `%s`", escapeMarkdown(modelName)))
+		if capsBadges == "" {
+			capsBadges = " completion"
+		}
+		h.send(chatID, fmt.Sprintf("Ollama Cloud → `%s` \\[%s\\]", escapeMarkdown(modelName), escapeMarkdown(strings.TrimSpace(capsBadges))))
 	}
 }
 
@@ -1476,6 +1474,15 @@ func formatBytes(n int) string {
 }
 
 // escapeMarkdown escapes special characters for Telegram MarkdownV2.
+func sliceContains(ss []string, val string) bool {
+	for _, s := range ss {
+		if s == val {
+			return true
+		}
+	}
+	return false
+}
+
 func escapeMarkdown(s string) string {
 	replacer := strings.NewReplacer(
 		"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]",

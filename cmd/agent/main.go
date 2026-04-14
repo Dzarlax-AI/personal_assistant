@@ -95,6 +95,7 @@ func main() {
 	if cfg.Models.OllamaCloud.Model != "" {
 		p, e := llm.NewOllama(cfg.Models.OllamaCloud)
 		addProvider("ollama-cloud", p, e)
+		llm.InitCloudModelCache("config/ollama_cloud_cache.json")
 	}
 	if cfg.Models.Claude.BaseURL != "" {
 		p, e := llm.NewClaudeBridge(cfg.Models.Claude)
