@@ -108,19 +108,25 @@ func (a *Agent) TTSEnabled() bool {
 
 // Process runs the agentic loop. onToolCall is called before each tool execution (may be nil).
 func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(toolName string)) (string, error) {
+	tr := newRequestTrace()
 	queryText := messageText(userMsg)
 
 	// Store user message; embed it if semantic store + MCP embeddings are both available.
+	endEmbed := tr.begin("embed")
 	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
+	endEmbed()
 
 	// Auto-compact if needed
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
 		a.logger.Info("auto-compacting conversation", "chat_id", chatID)
+		endCompact := tr.begin("compact")
 		if err := a.compacter.Compact(ctx, chatID, a.store); err != nil {
 			a.logger.Warn("auto compaction failed", "err", err)
 		}
+		endCompact()
 	}
 
+	endToolsSel := tr.begin("tools_select")
 	var tools []llm.Tool
 	if a.mcp != nil {
 		tools = a.mcp.LLMToolsForQuery(ctx, queryText)
@@ -131,25 +137,38 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	if a.filesystem != nil {
 		tools = append(tools, filesystemTools()...)
 	}
+	endToolsSel()
 
+	endCross := tr.begin("cross_session")
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
+	endCross()
 
 	// Check response cache before calling the LLM.
-	if cached, ok := a.cache.Get(chatID, queryEmb); ok {
+	endCache := tr.begin("cache")
+	cached, cacheHit := a.cache.Get(chatID, queryEmb)
+	endCache()
+	if cacheHit {
 		a.logger.Info("cache hit", "chat_id", chatID)
 		a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: cached})
+		tr.log(a.logger, chatID, "cache_hit")
 		return cached, nil
 	}
 
 	for i := 0; i < maxToolIterations; i++ {
+		endHist := tr.begin(fmt.Sprintf("iter%d_history", i))
 		history := a.getHistory(chatID, queryEmb)
+		endHist()
 
 		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
 		if crossSessionCtx != "" {
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
+
+		endLLM := tr.begin(fmt.Sprintf("iter%d_llm", i))
 		resp, err := a.router.Chat(ctx, history, sysPrompt, tools)
+		endLLM()
 		if err != nil {
+			tr.log(a.logger, chatID, "llm_error")
 			return "", fmt.Errorf("llm: %w", err)
 		}
 
@@ -162,6 +181,7 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, resp.Content)
 			}
+			tr.log(a.logger, chatID, "ok")
 			return resp.Content, nil
 		}
 
@@ -171,25 +191,35 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			ToolCalls: resp.ToolCalls,
 		})
 
+		endTools := tr.begin(fmt.Sprintf("iter%d_tools", i))
 		a.executeToolCalls(ctx, chatID, resp.ToolCalls, onToolCall)
+		endTools()
 	}
 
+	tr.log(a.logger, chatID, "max_iterations")
 	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
 }
 
 // ProcessStream is like Process but streams the final text response via onChunk.
 // Tool-calling iterations remain synchronous. onChunk receives the accumulated text so far.
 func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string), onChunk func(accumulated string)) (string, error) {
+	tr := newRequestTrace()
 	queryText := messageText(userMsg)
+
+	endEmbed := tr.begin("embed")
 	queryEmb := a.storeUserMessage(ctx, chatID, userMsg, queryText)
+	endEmbed()
 
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
 		a.logger.Info("auto-compacting conversation", "chat_id", chatID)
+		endCompact := tr.begin("compact")
 		if err := a.compacter.Compact(ctx, chatID, a.store); err != nil {
 			a.logger.Warn("auto compaction failed", "err", err)
 		}
+		endCompact()
 	}
 
+	endToolsSel := tr.begin("tools_select")
 	var tools []llm.Tool
 	if a.mcp != nil {
 		tools = a.mcp.LLMToolsForQuery(ctx, queryText)
@@ -200,24 +230,37 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 	if a.filesystem != nil {
 		tools = append(tools, filesystemTools()...)
 	}
+	endToolsSel()
 
+	endCross := tr.begin("cross_session")
 	crossSessionCtx := a.buildCrossSessionContext(ctx, chatID, queryEmb)
+	endCross()
 
-	if cached, ok := a.cache.Get(chatID, queryEmb); ok {
+	endCache := tr.begin("cache")
+	cached, cacheHit := a.cache.Get(chatID, queryEmb)
+	endCache()
+	if cacheHit {
 		a.logger.Info("cache hit", "chat_id", chatID)
 		a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: cached})
+		tr.log(a.logger, chatID, "cache_hit")
 		return cached, nil
 	}
 
 	for i := 0; i < maxToolIterations; i++ {
+		endHist := tr.begin(fmt.Sprintf("iter%d_history", i))
 		history := a.getHistory(chatID, queryEmb)
+		endHist()
+
 		sysPrompt := "Current date and time: " + time.Now().Format("Monday, 2 January 2006, 15:04 MST") + "\n\n" + a.sysPrompt
 		if crossSessionCtx != "" {
 			sysPrompt += "\n\n" + crossSessionCtx
 		}
 
+		endLLM := tr.begin(fmt.Sprintf("iter%d_llm", i))
 		ch, err := a.router.ChatStream(ctx, history, sysPrompt, tools)
 		if err != nil {
+			endLLM()
+			tr.log(a.logger, chatID, "llm_error")
 			return "", fmt.Errorf("llm: %w", err)
 		}
 
@@ -227,6 +270,8 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 
 		for chunk := range ch {
 			if chunk.Err != nil {
+				endLLM()
+				tr.log(a.logger, chatID, "stream_error")
 				return "", fmt.Errorf("llm stream: %w", chunk.Err)
 			}
 			if chunk.Delta != "" {
@@ -242,12 +287,14 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 				}
 			}
 		}
+		endLLM()
 
 		if len(toolCalls) == 0 {
 			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, accumulated)
 			}
+			tr.log(a.logger, chatID, "ok")
 			return accumulated, nil
 		}
 
@@ -258,9 +305,12 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 			ToolCalls: toolCalls,
 		})
 
+		endTools := tr.begin(fmt.Sprintf("iter%d_tools", i))
 		a.executeToolCalls(ctx, chatID, toolCalls, onToolCall)
+		endTools()
 	}
 
+	tr.log(a.logger, chatID, "max_iterations")
 	return "", fmt.Errorf("exceeded maximum tool iterations (%d)", maxToolIterations)
 }
 
