@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"math"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -923,16 +925,33 @@ type htmlChunk struct {
 	html string
 }
 
-// sendHTMLWithFallback sends a single HTML message, falling back to plain text.
+// sendHTMLWithFallback sends an HTML message with graceful degradation.
+// On HTML failure (malformed tag, unsupported entity, etc.) it first retries
+// with HTML tags stripped — the unicode structure produced by our converter
+// (bullets, checkboxes, box-drawing for tables) is preserved, which is far
+// more readable than the raw Markdown source. Only if that also fails do we
+// fall back to the raw text.
 func (h *Handler) sendHTMLWithFallback(chatID int64, rawText, htmlText string) {
 	if h.sendHTMLMsg(chatID, htmlText) {
 		return
 	}
-	h.logger.Warn("html send failed, retrying as plain text")
+	h.logger.Warn("html send failed, retrying as stripped text")
+	if h.sendPlainMsg(chatID, stripHTMLTags(htmlText)) {
+		return
+	}
+	h.logger.Warn("stripped send failed, retrying as raw markdown")
 	msg := tgbotapi.NewMessage(chatID, rawText)
 	if _, err := h.bot.Send(msg); err != nil {
 		h.logger.Error("failed to send response", "chat_id", chatID, "err", err)
 	}
+}
+
+var reHTMLTag = regexp.MustCompile(`<[^>]+>`)
+
+// stripHTMLTags removes HTML markup but keeps the text content and any
+// non-HTML unicode structure (•, ☐, │, ─). Entities like &amp; are decoded.
+func stripHTMLTags(s string) string {
+	return html.UnescapeString(reHTMLTag.ReplaceAllString(s, ""))
 }
 
 // sendHTMLMsg sends an HTML message. Returns true on success.
@@ -1047,6 +1066,9 @@ func (h *Handler) sendAsFile(chatID int64, text string) {
 
 // splitMessage splits text into chunks of at most maxLen bytes,
 // breaking at paragraph boundaries (\n\n), then line boundaries (\n).
+// If a split lands inside an open ``` fence, the fence is closed in the
+// current chunk and reopened (with the same language tag) in the next one
+// so each chunk remains a standalone, syntactically valid Markdown document.
 func splitMessage(text string, maxLen int) []string {
 	if len(text) <= maxLen {
 		return []string{text}
@@ -1060,26 +1082,55 @@ func splitMessage(text string, maxLen int) []string {
 		}
 
 		chunk := text[:maxLen]
+		var part, rest string
 
 		// Try to break at a paragraph boundary.
 		if idx := strings.LastIndex(chunk, "\n\n"); idx > maxLen/4 {
-			parts = append(parts, text[:idx])
-			text = strings.TrimLeft(text[idx:], "\n")
-			continue
+			part = text[:idx]
+			rest = strings.TrimLeft(text[idx:], "\n")
+		} else if idx := strings.LastIndex(chunk, "\n"); idx > maxLen/4 {
+			// Line boundary.
+			part = text[:idx]
+			rest = text[idx+1:]
+		} else {
+			// Hard break at maxLen.
+			part = chunk
+			rest = text[maxLen:]
 		}
 
-		// Try to break at a line boundary.
-		if idx := strings.LastIndex(chunk, "\n"); idx > maxLen/4 {
-			parts = append(parts, text[:idx])
-			text = text[idx+1:]
-			continue
-		}
-
-		// Hard break at maxLen.
-		parts = append(parts, chunk)
-		text = text[maxLen:]
+		part, rest = balanceFence(part, rest)
+		parts = append(parts, part)
+		text = rest
 	}
 	return parts
+}
+
+// balanceFence ensures `part` does not end inside an open ``` fence.
+// If a fence is open at the end of `part`, it is closed there and a fresh
+// opening fence (with the same language tag) is prepended to `rest`.
+func balanceFence(part, rest string) (string, string) {
+	inFence := false
+	lang := ""
+	for _, line := range strings.Split(part, "\n") {
+		if !inFence {
+			if m := reFenceOpen.FindStringSubmatch(line); m != nil {
+				inFence = true
+				lang = m[1]
+			}
+		} else if line == "```" {
+			inFence = false
+			lang = ""
+		}
+	}
+	if inFence {
+		if !strings.HasSuffix(part, "\n") {
+			part += "\n"
+		}
+		part += "```"
+		prefix := "```" + lang + "\n"
+		rest = prefix + rest
+	}
+	return part, rest
 }
 
 // send sends a bot-generated message with MarkdownV2 (text must be pre-escaped).
