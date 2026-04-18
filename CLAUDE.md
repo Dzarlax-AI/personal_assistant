@@ -115,6 +115,20 @@ flowchart LR
 | `config/mcp.json` | MCP servers in Claude Desktop format |
 | `config/system_prompt.md` | System prompt injected on every LLM request |
 
+### System prompt layering
+
+When editing system prompts, stay within the scope for each file:
+
+| File | Committed | Scope |
+|---|---|---|
+| `config/system_prompt.md.example` | yes | Public starter — memory MCP + built-in tools (filesystem, ollama web_search) only |
+| `templates/CLAUDE.md` | yes | Deployed to `/assistant_context/CLAUDE.md` — same built-ins-only scope as `.example` |
+| `config/system_prompt.md` | no (`.gitignored`) | User's local working copy. Used as fallback system prompt when filesystem is disabled; otherwise `/assistant_context/CLAUDE.md` is primary. |
+
+Do NOT add MCPs that users wire up individually (Todoist tasks, finance, calendar, health-dashboard, etc.) to the repo-committed files — those belong in per-deployment configs (e.g. `personal_ai_stack/deploy/personal_assistant/config/system_prompt.md` for Alexey's VPS).
+
+Prompts are in English for tokenization efficiency. Response language is preserved by the explicit "Reply in the language the user writes in" rule inside the prompt itself.
+
 ### LLM routing priority
 
 1. **Multimodal** — message has image `Parts`
