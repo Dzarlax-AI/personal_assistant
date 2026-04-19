@@ -9,28 +9,35 @@ telegram:
 # Known providers: openrouter, gemini, ollama, claude-bridge, local, hf-tei, openai.
 # The key "embedding" is reserved for the MCP embedding provider.
 models:
-  # --- OpenRouter — one API key, many models. Add as many entries as you need. ---
-  workhorse:
+  # --- OpenRouter slots — one per role so each can be reassigned independently
+  #     from the admin UI. Initial models are suggestions; override via UI. ---
+  simple-or:
     provider: openrouter
-    model: ${OPENROUTER_MODEL:-deepseek/deepseek-chat-v3.1}
+    model: qwen/qwen3.5-flash-02-23        # V T R, 1M ctx, $0.065/$0.26
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 2048
+    base_url: https://openrouter.ai/api/v1
+
+  default-or:
+    provider: openrouter
+    model: qwen/qwen3.5-flash-02-23        # same as simple initially; diverge in UI
     api_key: ${OPENROUTER_API_KEY}
     max_tokens: 4096
     base_url: https://openrouter.ai/api/v1
-    vision: true
 
-  # Example: dedicate a separate OpenRouter model to a routing role.
-  # complex-or:
-  #   provider: openrouter
-  #   model: anthropic/claude-sonnet-4.5
-  #   api_key: ${OPENROUTER_API_KEY}
-  #   max_tokens: 8192
-  #   base_url: https://openrouter.ai/api/v1
-  # cheap-or:
-  #   provider: openrouter
-  #   model: google/gemini-2.5-flash-lite
-  #   api_key: ${OPENROUTER_API_KEY}
-  #   max_tokens: 2048
-  #   base_url: https://openrouter.ai/api/v1
+  complex-or:                              # alt to claude-bridge if bridge is off
+    provider: openrouter
+    model: qwen/qwen3-235b-a22b-thinking-2507
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 8192
+    base_url: https://openrouter.ai/api/v1
+
+  compaction-or:
+    provider: openrouter
+    model: qwen/qwen3.5-9b                 # min workable, 262k ctx, $0.10/$0.15
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 2048
+    base_url: https://openrouter.ai/api/v1
 
   # --- Gemini (direct Google API) — fallback + multimodal/transcription. ---
   gemini-flash-lite:
@@ -68,15 +75,15 @@ models:
     max_tokens: 120
 
 routing:
-  simple: workhorse            # level 1: simple/cheap tasks
-  default: workhorse           # level 2: moderate tasks (agentic loop)
-  complex: claude-bridge       # level 3: complex reasoning via Claude bridge
-  fallback: gemini-flash-lite
-  multimodal: gemini-flash     # vision/audio — also used for voice transcription
-  compaction: workhorse
-  classifier: classifier       # rates complexity 1/2/3
-  classifier_timeout: 15       # seconds
-  classifier_min_length: 0     # 0 = always classify; >0 = min chars; <0 = disabled
+  simple: simple-or
+  default: default-or
+  complex: claude-bridge         # via Anthropic Max subscription (host bridge)
+  compaction: compaction-or
+  fallback: gemini-flash-lite    # DIRECT Google — different vendor, survives OR outage
+  multimodal: gemini-flash       # DIRECT Google — native input_audio for voice
+  classifier: classifier         # local Ollama
+  classifier_timeout: 15
+  classifier_min_length: 0       # 0 = always; >0 = min chars; <0 = disabled
 
 tool_filter:
   top_k: 20

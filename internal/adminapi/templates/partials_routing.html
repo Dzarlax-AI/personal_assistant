@@ -25,6 +25,15 @@
                 <button class="btn btn--small btn--primary" type="submit">Set</button>
               </form>
               {{with .ModelID}}<span class="model-id" style="margin-left:0.5rem;color:var(--text-secondary);">→ {{.}}</span>{{end}}
+              {{if .HasPreset}}
+              <button class="btn btn--ghost btn--small suggest-btn"
+                      hx-get="/models?preset={{.Name}}"
+                      hx-target="#models-browser"
+                      hx-swap="outerHTML"
+                      title="Filter model catalog for this role">
+                ✨ Suggest
+              </button>
+              {{end}}
             </td>
           </tr>
           {{end}}

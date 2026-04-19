@@ -41,7 +41,7 @@ func TestTemplatesParse(t *testing.T) {
 	cases := map[string]any{
 		viewIndex:       data,
 		viewRouting:     data.Routing, // routing view takes uiRouting directly
-		viewModelsTable: data,
+		viewModelsBrowser: data,
 	}
 	for v, d := range cases {
 		t.Run(v, func(t *testing.T) {

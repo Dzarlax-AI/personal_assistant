@@ -12,9 +12,9 @@ var templatesFS embed.FS
 
 // View names — must match template file basenames under templates/.
 const (
-	viewIndex       = "index"
-	viewRouting     = "routing"
-	viewModelsTable = "models_table"
+	viewIndex         = "index"
+	viewRouting       = "routing"
+	viewModelsBrowser = "models_browser"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -25,11 +25,15 @@ var tmpls = func() map[string]*template.Template {
 	partials := []string{
 		"templates/partials_routing.html",
 		"templates/partials_models_row.html",
+		"templates/partials_models_browser.html",
 	}
+	// Each view's "main" template name must match a {{define "<name>"}} block
+	// inside the listed file. models_browser is defined inside the partial,
+	// so no extra file is needed.
 	views := map[string]string{
-		viewIndex:       "templates/index.html",
-		viewRouting:     "templates/routing.html",
-		viewModelsTable: "templates/models_table.html",
+		viewIndex:         "templates/index.html",
+		viewRouting:       "templates/routing.html",
+		viewModelsBrowser: "templates/partials_models_browser.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {

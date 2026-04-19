@@ -13,9 +13,10 @@ import (
 // --- View data ---
 
 type uiRole struct {
-	Name    string // e.g. "default", "reasoner"
-	Current string // slot name the role currently points at
-	ModelID string // underlying model id of that slot (if OR-backed); empty otherwise
+	Name      string // e.g. "default", "complex"
+	Current   string // slot name the role currently points at
+	ModelID   string // underlying model id of that slot (if OR-backed); empty otherwise
+	HasPreset bool   // true when a "Suggest" preset is defined for this role
 }
 
 type uiSlot struct {
@@ -40,11 +41,13 @@ type uiRouting struct {
 }
 
 type uiFilters struct {
-	Search    string
-	Free      bool
-	Vision    bool
-	Tools     bool
-	Reasoning bool
+	Search            string
+	Free              bool
+	Vision            bool
+	Tools             bool
+	Reasoning         bool
+	ActivePreset      string // role name when a preset is applied; empty otherwise
+	PresetDescription string // human-readable summary for the banner
 }
 
 type indexData struct {
@@ -68,7 +71,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	data := s.buildIndexData(r) // reuses model filtering + slots
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := render(w, viewModelsTable, data); err != nil {
+	if err := render(w, viewModelsBrowser, data); err != nil {
 		s.logger.Error("render models_table", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
@@ -180,7 +183,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// Re-render just the tbody.
 	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := render(w, viewModelsTable, data); err != nil {
+	if err := render(w, viewModelsBrowser, data); err != nil {
 		s.logger.Error("render models after refresh", "err", err)
 	}
 }
@@ -188,11 +191,37 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 // --- Data builders ---
 
 func (s *Server) buildIndexData(r *http.Request) indexData {
-	// Tool calling is required for the agentic loop, so default the filter ON
-	// when the page is first loaded (no query string yet). Once the user
-	// submits the filters form, whatever they sent wins — including unchecking
-	// Tools to browse the full catalog.
 	q := r.URL.Query()
+	preset := q.Get("preset")
+
+	var allCaps map[string]llm.Capabilities
+	if s.capStore != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		allCaps, _ = s.capStore.GetAllCapabilities(ctx, "openrouter")
+	}
+
+	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
+	// filters are ignored on this path: the preset is a complete override.
+	if p, ok := rolePresets[preset]; ok {
+		return indexData{
+			Routing: s.buildRouting(),
+			Slots:   s.openRouterSlots(),
+			Models:  applyPreset(allCaps, preset),
+			Filters: uiFilters{
+				ActivePreset:      preset,
+				PresetDescription: p.Description,
+				// reflect preset intent in the checkboxes so user can tell what's on
+				Tools:     requiresTools(preset),
+				Vision:    preset == "multimodal",
+				Reasoning: preset == "complex",
+			},
+		}
+	}
+
+	// Manual filter path — Tools defaults ON on initial page load (empty
+	// query string), since the agentic loop requires tool calling. Once the
+	// user submits the filters form, whatever they send wins.
 	formSubmitted := len(q) > 0
 	f := uiFilters{
 		Search:    strings.ToLower(strings.TrimSpace(q.Get("q"))),
@@ -200,13 +229,6 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		Vision:    q.Get("vision") != "",
 		Tools:     q.Get("tools") != "" || !formSubmitted,
 		Reasoning: q.Get("reasoning") != "",
-	}
-
-	var allCaps map[string]llm.Capabilities
-	if s.capStore != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		allCaps, _ = s.capStore.GetAllCapabilities(ctx, "openrouter")
 	}
 
 	models := make([]uiModel, 0, len(allCaps))
@@ -257,6 +279,15 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	}
 }
 
+// requiresTools returns true when the preset's filter requires tool-calling.
+func requiresTools(preset string) bool {
+	switch preset {
+	case "simple", "default", "complex", "multimodal":
+		return true
+	}
+	return false
+}
+
 func (s *Server) buildRouting() uiRouting {
 	cfg := s.router.GetConfig()
 	allSlots := s.router.ProviderNames()
@@ -277,12 +308,14 @@ func (s *Server) buildRouting() uiRouting {
 		"compaction": cfg.Compaction,
 	}
 	order := []string{"simple", "default", "complex", "multimodal", "fallback", "classifier", "compaction"}
+	presets := presetRoles()
 	roles := make([]uiRole, 0, len(order))
 	for _, r := range order {
 		roles = append(roles, uiRole{
-			Name:    r,
-			Current: roleCur[r],
-			ModelID: orSlots[roleCur[r]],
+			Name:      r,
+			Current:   roleCur[r],
+			ModelID:   orSlots[roleCur[r]],
+			HasPreset: presets[r],
 		})
 	}
 	return uiRouting{Roles: roles, AllSlots: allSlots}
