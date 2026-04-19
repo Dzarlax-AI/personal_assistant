@@ -134,22 +134,24 @@ func TestAuthForwardAuth(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// With header → 200.
-	req, _ := http.NewRequest("GET", srv.URL+"/healthz", nil)
+	// With header → 200 on an authed route.
+	req, _ := http.NewRequest("GET", srv.URL+"/routing", nil)
 	req.Header.Set("X-authentik-username", "alice")
-	// healthz is unauthenticated anyway. Hit /routing instead (authed).
-	req.URL.Path = "/routing"
-	resp, _ := srv.Client().Do(req)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("forward-auth req: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		body, _ := bytes.NewBuffer(nil), resp.Body
 		t.Errorf("expected 200 with forward-auth header, got %d", resp.StatusCode)
-		_ = body
 	}
 
 	// Without header → 401.
 	req2, _ := http.NewRequest("GET", srv.URL+"/routing", nil)
-	resp2, _ := srv.Client().Do(req2)
+	resp2, err := srv.Client().Do(req2)
+	if err != nil {
+		t.Fatalf("no-auth req: %v", err)
+	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401 without forward-auth header, got %d", resp2.StatusCode)
