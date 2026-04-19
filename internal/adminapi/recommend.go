@@ -43,6 +43,14 @@ var specialisedCoderRegex = regexp.MustCompile(`-coder(-|$|:)`)
 // multimodal preset; they're needlessly expensive for plain text.
 var specialisedVisionRegex = regexp.MustCompile(`-vl-`)
 
+// thinkingRegex matches model ids that are actually frontier reasoners — the
+// `reasoning: true` capability flag alone is not enough (8B models also set
+// it just because the API accepts a reasoning parameter). Match the naming
+// conventions of genuine reasoning variants.
+var thinkingRegex = regexp.MustCompile(
+	`(-thinking|:thinking|/qwq|/deepseek-r[0-9]|-r1(-|$)|-reasoner)`,
+)
+
 // sortStrategy chooses the ordering key for a preset.
 type sortStrategy int
 
@@ -94,13 +102,14 @@ var rolePresets = map[string]rolePreset{
 	},
 
 	"complex": {
-		Description: "tools + reasoning + multilingual, ≤ $5/M prompt (Claude via bridge is the preferred choice if configured)",
+		Description: "frontier reasoners only (models with -thinking / -r1 / qwq in name). Tools + multilingual, ≤ $5/M prompt. Claude via bridge is the preferred choice when configured.",
 		Filter: func(c llm.Capabilities, id string) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
 				!isFreeVariant(id) &&
+				thinkingRegex.MatchString(id) &&
 				c.Tools && c.Reasoning &&
 				c.PromptPrice > 0 && c.PromptPrice <= 5.0
 		},
