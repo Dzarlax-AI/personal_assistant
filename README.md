@@ -5,12 +5,16 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 ## Features
 
 - **Multi-model routing** — any configured model can be primary; automatic fallback on errors or rate limits; dedicated reasoner for complex tasks; vision model for images; classifier-based routing to reasoner (supports local models via llama.cpp server)
+- **OpenRouter-centric** — cloud LLMs (DeepSeek, Qwen, Claude, Gemini, Llama, and 300+ more) accessed through a single OpenRouter API key with app-attribution headers, per-upstream retries, and tool-call-aware provider selection. Define as many named OpenRouter slots as you want and assign each to a different routing role.
+- **Vision- and tool-aware routing** — model capabilities (vision, tool calling, reasoning, prices, context length) are fetched from OpenRouter's `/api/v1/models` at startup, cached in the database, and used by the router to pick the right model per request. Vision-required messages automatically fall through to a capable model.
+- **Runtime model swaps** — change the model id backing any OpenRouter slot without restarting or editing YAML. Selections persist in a DB-backed settings store (`kv_settings` table), survive restarts, and sync across local Ollama + Claude bridge untouched.
 - **Claude via bridge** — use Claude (Anthropic Max subscription) as a provider through a lightweight host-side bridge service that wraps `claude -p` CLI; no separate API key needed
-- **Ollama Cloud support** — native `/api/chat` provider for Ollama Cloud and local Ollama instances; tool calling, multimodal, Bearer auth
+- **Local Ollama** — native `/api/chat` provider for local Ollama instances (typically used as the cheap/fast classifier via small models like Qwen 3 0.6B on host GPU)
 - **Voice messages** — send a voice message in Telegram and it's automatically transcribed via the multimodal model (Gemini), then processed as text through the normal pipeline; replies include both text and a voice message via Edge TTS
 - **Voice API + Atom Echo** — HTTP and WebSocket voice API for hardware voice assistants; ships with ESPHome firmware for M5Stack Atom Echo (push-to-talk, LED feedback, streaming audio over WebSocket)
 - **Text-to-speech** — Edge TTS (Microsoft) integration: no API key, high quality Russian/English voices, MP3 output for Telegram, WAV for hardware devices
-- **Web search** — built-in Ollama web search tool; any LLM model can search the web for real-time information
+- **Web search** — built-in `web_search` tool with provider dispatch: Tavily (free 1000/mo, LLM-ready answer + sources) or legacy Ollama Cloud; embedding-based query cache dedupes repeats across 6 hours
+- **Web fetch** — built-in `web_fetch` tool that extracts main article text from a URL; HTTP + go-readability primary path, headless Chrome (CDP) fallback for JS-heavy or bot-protected pages
 - **Filesystem tools** — built-in `fs_list`, `fs_read`, `fs_write`, `fs_append`, `fs_delete`, `fs_search` scoped to a configurable directory; path traversal protection; great for personal notes, reference materials, and shared context with Claude Bridge
 - **Semantic conversation memory** — user messages are embedded and stored; within a session, relevant past turns are retrieved by cosine similarity instead of just "last N messages"
 - **Cross-session memory** — past conversations are searched across all sessions; relevant snippets are automatically injected into the system prompt so the bot remembers what you discussed weeks ago
@@ -30,9 +34,9 @@ A lightweight Telegram bot that acts as a personal AI assistant. Written in Go �
 
 ## Requirements
 
-- Go 1.24+ (or Docker)
+- Go 1.26+ (or Docker)
 - [Telegram Bot Token](https://t.me/BotFather)
-- At least one LLM API key (DeepSeek, Gemini, or Ollama Cloud)
+- At least one LLM API key. Recommended: [OpenRouter](https://openrouter.ai) (one key, hundreds of models) + [Gemini](https://ai.google.dev) (direct, for vision/transcription fallback). Optional: Tavily for web search ([1000 free searches/month, no card](https://app.tavily.com)).
 
 ## Quick start
 
@@ -154,7 +158,7 @@ templates/
 
 ### `config/config.yaml`
 
-All values support `${ENV_VAR}` substitution. Every model requires an explicit `base_url`. Any model can be set as `routing.default` — it is not hardcoded to a specific provider.
+All values support `${ENV_VAR}` substitution. `models:` is a free-form map: each entry's **key** is the name referenced from `routing.*`, and its `provider:` field selects the backend (`openrouter`, `gemini`, `ollama`, `claude-bridge`, `local`, `hf-tei`, `openai`). The special key `embedding` is reserved for the MCP/memory embedding provider.
 
 ```yaml
 telegram:
@@ -164,18 +168,36 @@ telegram:
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
 models:
-  deepseek:
-    provider: deepseek
-    model: deepseek-chat
-    api_key: ${DEEPSEEK_API_KEY}
+  # --- OpenRouter — one API key, many models. Add as many slots as you need. ---
+  workhorse:
+    provider: openrouter
+    model: ${OPENROUTER_MODEL:-deepseek/deepseek-chat-v3.1}
+    api_key: ${OPENROUTER_API_KEY}
     max_tokens: 4096
-    base_url: https://api.deepseek.com
-  deepseek-r1:
-    provider: deepseek
-    model: deepseek-reasoner
-    api_key: ${DEEPSEEK_API_KEY}
-    max_tokens: 8192
-    base_url: https://api.deepseek.com
+    base_url: https://openrouter.ai/api/v1
+    vision: true   # overridden by capabilities fetched from /api/v1/models
+
+  # Dedicate a separate OpenRouter slot per routing role if you want different models.
+  # reasoner-or:
+  #   provider: openrouter
+  #   model: anthropic/claude-sonnet-4.5
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   max_tokens: 8192
+  #   base_url: https://openrouter.ai/api/v1
+  # cheap-or:
+  #   provider: openrouter
+  #   model: google/gemini-2.5-flash-lite
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   max_tokens: 2048
+  #   base_url: https://openrouter.ai/api/v1
+
+  # --- Gemini (direct Google API) — fallback + multimodal/voice-transcription. ---
+  gemini-flash-lite:
+    provider: gemini
+    model: gemini-3.1-flash-lite-preview
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 2048
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
   gemini-flash:
     provider: gemini
     model: gemini-3-flash-preview
@@ -183,67 +205,66 @@ models:
     max_tokens: 4096
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
 
-  # Embedding model — used for both MCP tool filtering and conversation memory.
-  # Option 1: Gemini (default)
+  # --- MCP / memory embedding. ---
   embedding:
-    provider: gemini
-    model: gemini-embedding-001
-    api_key: ${GEMINI_API_KEY}
-  # Option 2: HuggingFace Text Embeddings Inference
-  # embedding:
-  #   provider: hf-tei
-  #   base_url: https://embed.yourdomain.com
-  #   api_key: ${EMBED_API_KEY}   # "user:password" for Basic Auth
-  # Option 3: OpenAI-compatible endpoint
-  # embedding:
-  #   provider: openai
-  #   base_url: https://api.openai.com
-  #   model: text-embedding-3-small
-  #   api_key: ${OPENAI_API_KEY}
+    provider: hf-tei         # or "openai" / "gemini"
+    base_url: https://embed.yourdomain.com
+    api_key: ${EMBED_API_KEY}  # hf-tei: "user:password" for Basic Auth; openai: API key
 
-  # Ollama Cloud or local Ollama (native /api/chat protocol)
-  # ollama:
-  #   model: qwen3.5:32b          # any model from ollama.com/search?c=cloud
-  #   api_key: ${OLLAMA_API_KEY}  # required for cloud; optional for local
-  #   base_url: https://ollama.com # default; http://localhost:11434 for local
+  # --- Local Ollama — cheap/fast classifier on host GPU. ---
+  classifier:
+    provider: ollama
+    model: qwen3:0.6b
+    base_url: http://host.docker.internal:11434
+    max_tokens: 64
+    no_think: true
 
-  # Claude via bridge (requires claude-bridge running on host — see Claude Bridge section)
-  # claude:
+  # --- Claude via host-side bridge (see Claude Bridge section). Optional. ---
+  # claude-bridge:
+  #   provider: claude-bridge
   #   base_url: http://host.docker.internal:9900
   #   api_key: ${CLAUDE_BRIDGE_TOKEN}
-  #   max_tokens: 120              # timeout in seconds
+  #   max_tokens: 120          # CLI timeout in seconds
 
-  # Local model via llama.cpp server (OpenAI-compatible API).
-  # No API key needed — only base_url and model.
-  # local:
+  # --- Local llama.cpp server (OpenAI-compatible). Optional. ---
+  # local-gemma:
   #   provider: local
   #   model: gemma-3n-E2B
   #   max_tokens: 64
   #   base_url: http://classifier:8080/v1
 
 routing:
-  default: deepseek          # primary model — can be any configured model name
-  fallback: gemini-flash     # also used for multimodal
-  multimodal: gemini-flash
-  reasoner: deepseek-r1
-  classifier: local          # local model for reasoning detection; omit to disable
-  classifier_min_length: 100 # min chars to run classifier; 0 = disabled
-  compaction_model: deepseek
+  local: workhorse             # level 1: simple tasks
+  default: workhorse           # level 2: moderate tasks (agentic loop)
+  reasoner: workhorse          # level 3: complex reasoning (use `claude-bridge` or `reasoner-or` if configured)
+  fallback: gemini-flash-lite
+  multimodal: gemini-flash     # vision/audio — also used for voice transcription
+  compaction_model: workhorse
+  classifier: classifier       # rates complexity 1/2/3
+  classifier_min_length: 0     # 0 = always; >0 = min chars; <0 = disabled
 
 tool_filter:
-  top_k: 20   # top-K tools selected per request via vector similarity; 0 = disabled
+  top_k: 20   # top-K MCP tools selected per request via vector similarity; 0 = disabled
 
-# Ollama web search — gives any LLM access to real-time web results
-# web_search:
-#   enabled: true
-#   api_key: ${OLLAMA_API_KEY}
-#   base_url: https://ollama.com  # default
+# Web search — provider: "tavily" (free 1000/mo, LLM-ready answer+sources) or "ollama".
+web_search:
+  enabled: true
+  provider: tavily
+  api_key: ${TAVILY_API_KEY}
+
+# Web fetch — extract main article text from a URL.
+# cdp_url is optional; when set, JS-heavy / bot-protected pages fall back to a headless Chrome.
+web_fetch:
+  enabled: true
+  cdp_url: ${WEB_FETCH_CDP_URL:-}   # e.g. http://infra-chrome:9222
 
 # Filesystem access — gives the assistant read/write access to a local directory
 # filesystem:
 #   enabled: true
 #   root: /assistant_context   # mount via docker-compose volumes
 ```
+
+**Model capabilities:** at startup the bot calls OpenRouter's `/api/v1/models` once, upserts every entry into the `model_capabilities` table (SQLite in dev, Postgres in prod), and applies each slot's caps so vision-aware routing knows which OpenRouter model can actually take images. When the admin UI (coming in Phase 2) swaps a slot's model, its caps are looked up from the store and `SetProviderModel` persists the choice in `kv_settings` under `routing.overrides` — no YAML edit or restart required.
 
 ### `config/mcp.json`
 
@@ -382,7 +403,7 @@ esphome run atom-echo.yaml            # compile + flash via USB
 
 The classifier is a lightweight call with no history and no tools that returns `yes`/`no`. It only runs for messages longer than `classifier_min_length` characters (default: 100). Input is truncated to 500 chars to save tokens. Set `classifier_min_length: 0` to disable. The classifier can run on a local model (e.g. Gemma 3n 270M via llama.cpp server) for zero-latency, zero-cost routing — configure `local` provider and set `classifier: local`.
 
-All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in `config/routing.json`. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
+All routing roles can be changed live via `/routing` — an inline keyboard menu. **Changes persist across restarts** in the database (`kv_settings` table, key `routing.overrides`). A legacy `config/routing.json` file is auto-imported and removed on first start, then never touched again. On startup, the bot notifies the owner via Telegram if any routing role references an unavailable model.
 
 ## Semantic Memory
 
@@ -551,15 +572,17 @@ flowchart TD
         SC["Semantic compaction\ntopic clusters → per-cluster summary"]
     end
 
-    WebSearch["Web Search\n(Ollama API)"]
+    WebSearch["Web Search\n(Tavily / Ollama)"]
+    WebFetch["Web Fetch\n(readability + CDP fallback)"]
     FS["Filesystem Tools\n(notes · reference · tasks)"]
+    CapStore[("model_capabilities\n+ kv_settings\n(persistent routing)")]
 
     subgraph LLMs ["LLM Providers"]
-        DS["deepseek"]
-        DSR["deepseek-r1"]
-        GM["gemini-flash"]
-        OL["ollama (optional)"]
-        CB["claude (via bridge)"]
+        OR["openrouter (workhorse)"]
+        ORx["openrouter (reasoner-or, ...)"]
+        GM["gemini-flash-lite / gemini-flash"]
+        OLC["ollama (classifier, local)"]
+        CB["claude (via bridge, optional)"]
     end
 
     subgraph Host ["Host (outside Docker)"]
@@ -594,15 +617,17 @@ flowchart TD
     Agent --> Router
     Agent -->|"query embed · top-K filter"| MCP
     Agent <-->|"web_search tool"| WebSearch
+    Agent <-->|"web_fetch tool"| WebFetch
     Agent <-->|"read · write · search"| FS
+    Router <-->|"caps + overrides"| CapStore
     FS <-->|"shared directory"| CTX
     Handler -->|"voice → transcribe"| Agent
     MCP <-->|"embed tools at startup"| Emb
     MCP <-->|"tools/call"| Servers
-    Router --> DS
-    Router --> DSR
+    Router --> OR
+    Router --> ORx
     Router --> GM
-    Router --> OL
+    Router --> OLC
     Router --> CB
     CB -->|"POST /ask"| Bridge
     Bridge -->|"claude -p"| CLI
@@ -610,3 +635,18 @@ flowchart TD
 ```
 
 See [CLAUDE.md](CLAUDE.md) for developer details.
+
+## Decision log
+
+### 2026-04-19 — Consolidated cloud LLMs under OpenRouter
+
+Removed direct integrations with DeepSeek, Qwen (DashScope), and Ollama Cloud. All cloud model access now goes through [OpenRouter](https://openrouter.ai) with a single API key. Local Ollama is retained for the classifier role. Gemini stays direct via Google's API for multimodal/vision (and voice transcription). Claude stays via the existing bridge.
+
+Motivation:
+- **Ollama Cloud was consistently slow** on the 397B model we were using — latency well above 10s to first token on normal-sized prompts, and response quality not noticeably better than cheaper alternatives.
+- **Managing 3–4 vendor accounts** (DeepSeek + Qwen + Ollama Cloud + Gemini) for overlapping model access was friction: four billing pages, four API tokens, four SDK quirks to track. OpenRouter exposes DeepSeek, Qwen, Claude, Gemini, Llama, and 300+ other models behind one OpenAI-compatible endpoint and one key.
+- **Tool-call-aware fallbacks**: OpenRouter's `provider.require_parameters=true` + `allow_fallbacks=true` guarantees the picked upstream supports tool calling (critical for the agentic loop) and transparently retries on a different upstream if the first returns an error.
+- **Usage visibility**: `usage.include=true` returns prompt/completion token counts on every response, making cost tracking straightforward.
+- **Occasional free-tier promos** — OpenRouter regularly has `:free` variants of popular models (e.g. Gemma, Llama) that are genuinely free, swappable at runtime.
+
+Under the hood: `ModelsConfig` was refactored from a fixed Go struct to `map[string]ModelConfig`, so you can define as many OpenRouter slots as you want (each with a different model id) and assign each to a different routing role — no Go changes required. Model capabilities are fetched from OpenRouter's `/api/v1/models` at startup and cached in the database, making vision-aware routing accurate even when you swap the slot to a different model mid-session.

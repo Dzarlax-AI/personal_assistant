@@ -51,9 +51,6 @@ type routingOverrides struct {
 	// UI swap the model backing e.g. `workhorse` to `anthropic/claude-sonnet-4.5`
 	// without editing config.yaml. Applied by main.go after LoadPersistedOverrides.
 	OpenRouterModels map[string]string `json:"openrouter_models,omitempty"`
-	// Legacy, kept for backward-compat with existing routing.json files.
-	OllamaCloudModel  string `json:"ollama_cloud_model,omitempty"`
-	OllamaCloudVision *bool  `json:"ollama_cloud_vision,omitempty"`
 }
 
 // Router selects the appropriate LLM provider based on context.
@@ -179,13 +176,6 @@ func (r *Router) LoadPersistedOverrides() error {
 			r.pendingOpenRouterOverrides[k] = v
 		}
 	}
-	// Restore Ollama Cloud model choice (legacy).
-	if ov.OllamaCloudModel != "" {
-		if oc := r.findOllamaCloud(); oc != nil {
-			vision := ov.OllamaCloudVision != nil && *ov.OllamaCloudVision
-			oc.SetModelAndCaps(ov.OllamaCloudModel, vision)
-		}
-	}
 	return nil
 }
 
@@ -235,17 +225,6 @@ func (r *Router) saveOverrides() {
 		Classifier:       r.cfg.Classifier,
 		ClassifierMinLen: &minLen,
 		OpenRouterModels: r.currentOpenRouterModels(),
-	}
-	// Include Ollama Cloud model if present.
-	if oc := r.findOllamaCloud(); oc != nil {
-		if m, ok := oc.OllamaCloudModel(); ok {
-			ov.OllamaCloudModel = m
-			v := false
-			if vp, ok2 := oc.(interface{ SupportsVision() bool }); ok2 {
-				v = vp.SupportsVision()
-			}
-			ov.OllamaCloudVision = &v
-		}
 	}
 	data, err := json.Marshal(ov)
 	if err != nil {
@@ -486,46 +465,6 @@ func (r *Router) ProviderNames() []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// ollamaCloudSetter is implemented by Ollama providers that can switch models at runtime.
-type ollamaCloudSetter interface {
-	SetModelAndCaps(model string, vision bool)
-	OllamaCloudModel() (string, bool)
-}
-
-// findOllamaCloud returns the first Ollama Cloud provider (base URL contains "ollama.com").
-func (r *Router) findOllamaCloud() ollamaCloudSetter {
-	for _, p := range r.providers {
-		if oc, ok := p.(ollamaCloudSetter); ok {
-			if _, isCloud := oc.OllamaCloudModel(); isCloud {
-				return oc
-			}
-		}
-	}
-	return nil
-}
-
-// OllamaCloudModelName returns the current model of the Ollama Cloud provider,
-// or ("", false) if no such provider is configured.
-func (r *Router) OllamaCloudModelName() (string, bool) {
-	if oc := r.findOllamaCloud(); oc != nil {
-		return oc.OllamaCloudModel()
-	}
-	return "", false
-}
-
-// SetOllamaCloudModel changes the model on the Ollama Cloud provider and persists the choice.
-func (r *Router) SetOllamaCloudModel(model string, vision bool) bool {
-	oc := r.findOllamaCloud()
-	if oc == nil {
-		return false
-	}
-	oc.SetModelAndCaps(model, vision)
-	r.mu.Lock()
-	r.saveOverrides()
-	r.mu.Unlock()
-	return true
 }
 
 func (r *Router) pick(ctx context.Context, messages []Message) Provider {
