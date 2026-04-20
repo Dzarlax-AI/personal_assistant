@@ -4,105 +4,81 @@ telegram:
     - ${TELEGRAM_OWNER_CHAT_ID}
   owner_chat_id: ${TELEGRAM_OWNER_CHAT_ID}
 
-# Each entry's KEY is its routing name (referenced from `routing.*` below).
-# Each entry's `provider` field selects the backend implementation.
-# Known providers: openrouter, gemini, ollama, claude-bridge, local, hf-tei, openai.
-# The key "embedding" is reserved for the MCP embedding provider.
+# Each entry's KEY is its routing name. `provider` field selects the backend
+# TYPE and the initial credentials; at runtime, the admin UI can swap both
+# the provider type AND the model for any slot (via BuildBackendFactories).
+#
+# base_url is omitted for openrouter/gemini/claude-bridge/ollama — those
+# have built-in defaults (llm.ApplyProviderDefaults). Override via env vars:
+#   OPENROUTER_BASE_URL, CLAUDE_BRIDGE_URL, OLLAMA_BASE_URL.
 models:
-  # --- OpenRouter slots — one per role so each can be reassigned independently
-  #     from the admin UI. Initial models are suggestions; override via UI. ---
-  simple-or:
+  # --- One slot per routing role. Admin UI picks provider+model per slot. ---
+  simple:
     provider: openrouter
-    model: qwen/qwen3.5-flash-02-23        # V T R, 1M ctx, $0.065/$0.26
+    model: qwen/qwen3.5-flash-02-23
     api_key: ${OPENROUTER_API_KEY}
     max_tokens: 2048
-    base_url: https://openrouter.ai/api/v1
-
-  default-or:
+  default:
     provider: openrouter
-    model: qwen/qwen3.5-flash-02-23        # same as simple initially; diverge in UI
+    model: qwen/qwen3.5-flash-02-23
     api_key: ${OPENROUTER_API_KEY}
     max_tokens: 4096
-    base_url: https://openrouter.ai/api/v1
-
-  complex-or:                              # alt to claude-bridge if bridge is off
-    provider: openrouter
-    model: qwen/qwen3-235b-a22b-thinking-2507
-    api_key: ${OPENROUTER_API_KEY}
-    max_tokens: 8192
-    base_url: https://openrouter.ai/api/v1
-
-  compaction-or:
-    provider: openrouter
-    model: qwen/qwen3.5-9b                 # min workable, 262k ctx, $0.10/$0.15
-    api_key: ${OPENROUTER_API_KEY}
-    max_tokens: 2048
-    base_url: https://openrouter.ai/api/v1
-
-  # --- Gemini (direct Google API) — fallback + multimodal/transcription. ---
-  gemini-flash-lite:
-    provider: gemini
-    model: gemini-3.1-flash-lite-preview
-    api_key: ${GEMINI_API_KEY}
-    max_tokens: 2048
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-  gemini-flash:
-    provider: gemini
-    model: gemini-3-flash-preview
-    api_key: ${GEMINI_API_KEY}
-    max_tokens: 4096
-    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
-
-  # --- MCP embedding (hf-tei self-hosted). ---
-  embedding:
-    provider: hf-tei
-    base_url: https://embed.dzarlax.dev   # or http://embed-service:8080 in Docker
-    api_key: ${EMBED_API_KEY}             # format: "user:password" for Basic Auth
-
-  # --- Local Ollama — cheap fast classifier on host GPU. ---
-  classifier:
-    provider: ollama
-    model: qwen3:0.6b
-    base_url: http://host.docker.internal:11434
-    max_tokens: 64
-    no_think: true
-
-  # --- Claude via host-side bridge (wraps `claude -p` CLI). ---
-  claude-bridge:
+  complex:
     provider: claude-bridge
-    base_url: http://host.docker.internal:9900
     api_key: ${CLAUDE_BRIDGE_TOKEN}
     max_tokens: 120
+  classifier:
+    provider: gemini
+    model: gemini-2.5-flash-lite
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 64
+  compaction:
+    provider: openrouter
+    model: qwen/qwen3.5-9b
+    api_key: ${OPENROUTER_API_KEY}
+    max_tokens: 2048
+  fallback:
+    provider: gemini
+    model: gemini-2.5-flash-lite
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 2048
+  multimodal:
+    provider: gemini
+    model: gemini-2.5-flash
+    api_key: ${GEMINI_API_KEY}
+    max_tokens: 4096
+
+  # --- Embedding (hf-tei in memory-embeddings container). Not an LLM slot. ---
+  embedding:
+    provider: hf-tei
+    base_url: http://memory-embeddings:80
 
 routing:
-  simple: simple-or
-  default: default-or
-  complex: claude-bridge         # via Anthropic Max subscription (host bridge)
-  compaction: compaction-or
-  fallback: gemini-flash-lite    # DIRECT Google — different vendor, survives OR outage
-  multimodal: gemini-flash       # DIRECT Google — native input_audio for voice
-  classifier: classifier         # local Ollama
+  simple: simple
+  default: default
+  complex: complex
+  compaction: compaction
+  fallback: fallback
+  multimodal: multimodal
+  classifier: classifier
   classifier_timeout: 15
-  classifier_min_length: 0       # 0 = always; >0 = min chars; <0 = disabled
+  classifier_min_length: 0
 
 tool_filter:
   top_k: 20
 
 # Web search — gives LLM access to real-time web results.
 # provider: "tavily" (free 1000/mo, LLM-ready answer+sources) or "ollama" (Ollama Cloud).
-# Get Tavily key at app.tavily.com (no card required for free tier).
 web_search:
   enabled: true
   provider: tavily
   api_key: ${TAVILY_API_KEY}
 
 # Web fetch — extract main article text from a URL.
-# Primary: HTTP GET + go-readability (no cost, no API key).
-# Fallback: headless Chrome via CDP (for JS-heavy / bot-protected sites).
-# Leave cdp_url empty to disable fallback.
+# Primary: HTTP GET + go-readability. Fallback: shared infra-chrome (CDP).
 web_fetch:
   enabled: true
-  cdp_url: ${WEB_FETCH_CDP_URL:-}
+  cdp_url: http://infra-chrome:9222
 
 # Filesystem access — gives the assistant read/write access to a local directory.
 # Mount the directory into the container via volumes in docker-compose.yml.
@@ -122,14 +98,15 @@ voice_api:
   token: ${VOICE_API_TOKEN}
   chat_id: 9999
 
-# Admin web UI — browse OpenRouter models, assign to slots, edit routing roles.
-# Auth priority: authentik forward-auth (if trust_forward_auth) → cookie → bearer.
-# When running behind Traefik with an Authentik middleware, set trust_forward_auth: true
-# and let the middleware handle access control.
+# Admin web UI — behind Traefik + Authentik.
 admin_api:
-  enabled: ${ADMIN_API_ENABLED:-false}
+  enabled: true
   listen: ":8087"
   token: ${ADMIN_API_TOKEN}
-  trust_forward_auth: ${ADMIN_TRUST_FORWARD_AUTH:-false}
+  trust_forward_auth: true
   forward_auth_header: X-authentik-username
-  base_url: ${ADMIN_API_BASE_URL}
+  base_url: https://assistant.dzarlax.dev
+
+# Artificial Analysis API — overlays Intelligence Index scores onto model capabilities.
+# Register at artificialanalysis.ai → API Keys. Free tier: 1000 req/day.
+artificial_analysis_api_key: ${AA_API_KEY}

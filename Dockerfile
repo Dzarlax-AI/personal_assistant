@@ -40,5 +40,10 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=builder /app/bin/agent .
+# Bake the default config.yaml into the image. Production deploys no longer
+# need to mount a config directory — secrets come from env, dynamic settings
+# live in kv_settings, and this file supplies the bootstrap defaults. For dev
+# you can still mount over it via volumes.
+COPY --from=builder /app/config/config.yaml ./config/config.yaml
 
 ENTRYPOINT ["./agent"]

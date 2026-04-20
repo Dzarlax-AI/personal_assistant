@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -231,12 +232,15 @@ func main() {
 
 	// Init MCP client. DB (kv_settings) wins over the legacy mcp.json file —
 	// the admin UI writes there, so any user-edited list is authoritative.
+	// On first boot with an empty DB, the file is auto-migrated so the next
+	// restart can run with the config.yaml volume unmounted.
 	var mcpClient *mcp.Client
 	var mcpServers map[string]config.MCPServerConfig
 	var mcpSource string
-	if ss, ok := s.(llm.SettingsStore); ok {
+	settingsStoreEarly, _ := s.(llm.SettingsStore)
+	if settingsStoreEarly != nil {
 		mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if dbServers, found, dbErr := adminapi.LoadMCPServersFromSettings(mcpCtx, ss); dbErr != nil {
+		if dbServers, found, dbErr := adminapi.LoadMCPServersFromSettings(mcpCtx, settingsStoreEarly); dbErr != nil {
 			logger.Warn("failed to load MCP servers from DB; falling back to file", "err", dbErr)
 		} else if found {
 			mcpServers = dbServers
@@ -252,6 +256,19 @@ func main() {
 		mcpServers = fileServers
 		if fileServers != nil {
 			mcpSource = "file"
+			// Auto-migrate: write the file contents to kv_settings so future
+			// boots don't depend on the file being present.
+			if settingsStoreEarly != nil {
+				migCtx, migCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				if data, mErr := json.Marshal(fileServers); mErr == nil {
+					if pErr := settingsStoreEarly.PutSetting(migCtx, adminapi.SettingKeyMCPServers, string(data)); pErr != nil {
+						logger.Warn("MCP auto-migration failed", "err", pErr)
+					} else {
+						logger.Info("MCP config auto-migrated file → DB", "servers", len(fileServers))
+					}
+				}
+				migCancel()
+			}
 		}
 	}
 	logger.Info("MCP config loaded", "servers", len(mcpServers), "source", mcpSource)
