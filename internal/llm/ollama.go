@@ -104,10 +104,12 @@ type ollamaOptions struct {
 }
 
 type ollamaResponse struct {
-	Model   string        `json:"model"`
-	Message ollamaMessage `json:"message"`
-	Done    bool          `json:"done"`
-	Error   string        `json:"error,omitempty"`
+	Model           string        `json:"model"`
+	Message         ollamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	PromptEvalCount int           `json:"prompt_eval_count"` // number of prompt tokens
+	EvalCount       int           `json:"eval_count"`        // number of generated tokens
+	Error           string        `json:"error,omitempty"`
 }
 
 func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
@@ -184,6 +186,12 @@ func (p *ollamaProvider) Chat(ctx context.Context, messages []Message, systemPro
 			Name:      tc.Function.Name,
 			Arguments: string(argsJSON),
 		})
+	}
+	if ollamaResp.PromptEvalCount > 0 || ollamaResp.EvalCount > 0 {
+		result.Usage = Usage{
+			PromptTokens:     ollamaResp.PromptEvalCount,
+			CompletionTokens: ollamaResp.EvalCount,
+		}
 	}
 	return result, nil
 }

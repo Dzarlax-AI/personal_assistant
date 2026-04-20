@@ -378,6 +378,14 @@ func (r *Router) Chat(ctx context.Context, messages []Message, systemPrompt stri
 	return resp, err
 }
 
+// RecordCall logs a UsageLog row for a provider call that was dispatched
+// directly (bypassing Router.Chat) — e.g. compaction in agent.Compacter
+// which already knows its target provider by role. Callers are responsible
+// for measuring latency and passing the response/error unchanged.
+func (r *Router) RecordCall(ctx context.Context, p Provider, role string, resp Response, callErr error, latency time.Duration) {
+	r.recordUsage(ctx, p, role, resp, callErr, latency)
+}
+
 // recordUsage persists a UsageLog row for one LLM call. Runs best-effort —
 // errors are logged but never fail the request. Extracts turn meta from ctx
 // when present; falls back to 0s when absent.
@@ -417,8 +425,14 @@ func (r *Router) recordUsage(ctx context.Context, p Provider, role string, resp 
 	// fail a user request.
 	writeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if _, err := store.PutUsage(writeCtx, log); err != nil {
+	id, err := store.PutUsage(writeCtx, log)
+	if err != nil {
 		r.logger.Warn("usage log write failed", "err", err, "provider", provKind, "model", modelID)
+		return
+	}
+	// Expose the new row's id so agent.Process can backfill assistant_message_id.
+	if meta.LastUsageID != nil {
+		*meta.LastUsageID = id
 	}
 }
 
@@ -728,6 +742,17 @@ func (r *Router) classify(ctx context.Context, text string) int {
 		t.ClassifyDur = classifyDur
 		t.ClassifyRan = true
 	}
+	// Record classifier usage separately so it shows up in dashboards distinct
+	// from the main call. The classifier inherits the turn's ChatID but marks
+	// itself as role="classifier" regardless of which provider backs it.
+	r.recordUsage(
+		WithTurnMeta(ctx, TurnMeta{
+			ChatID:        turnChatID(ctx),
+			UserMessageID: turnUserMsgID(ctx),
+			RoleHint:      "classifier",
+		}),
+		provider, "classifier", resp, err, classifyDur,
+	)
 	if err != nil {
 		r.logger.Warn("classifier error, falling back to primary", "classifier", classifierKey, "err", err)
 		return 2

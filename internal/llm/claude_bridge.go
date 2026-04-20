@@ -108,10 +108,15 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 	}
 
 	var bridgeResp struct {
-		Result    string `json:"result"`
-		SessionID string `json:"session_id"`
-		IsError   bool   `json:"is_error"`
-		Error     string `json:"error"`
+		Result                 string  `json:"result"`
+		SessionID              string  `json:"session_id"`
+		IsError                bool    `json:"is_error"`
+		Error                  string  `json:"error"`
+		InputTokens            int     `json:"input_tokens"`
+		OutputTokens           int     `json:"output_tokens"`
+		CacheReadInputTokens   int     `json:"cache_read_input_tokens"`
+		CacheCreateInputTokens int     `json:"cache_creation_input_tokens"`
+		TotalCostUSD           float64 `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(respBody, &bridgeResp); err != nil {
 		return Response{}, fmt.Errorf("claude-bridge: parse response: %w", err)
@@ -136,7 +141,19 @@ func (p *claudeBridgeProvider) Chat(ctx context.Context, messages []Message, sys
 		p.mu.Unlock()
 	}
 
-	return Response{Content: bridgeResp.Result}, nil
+	return Response{
+		Content: bridgeResp.Result,
+		Usage: Usage{
+			// Claude's input_tokens excludes cache reads; add them back so our
+			// prompt_tokens column matches the "total input" convention used
+			// by OpenAI/OR.
+			PromptTokens:       bridgeResp.InputTokens + bridgeResp.CacheReadInputTokens,
+			CompletionTokens:   bridgeResp.OutputTokens,
+			CachedPromptTokens: bridgeResp.CacheReadInputTokens,
+			Cost:               bridgeResp.TotalCostUSD,
+			RequestID:          bridgeResp.SessionID, // stable per session, good enough for cross-ref
+		},
+	}, nil
 }
 
 // buildPrompt formats conversation history as a single text prompt

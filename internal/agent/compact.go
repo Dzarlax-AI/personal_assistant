@@ -147,14 +147,18 @@ func (c *Compacter) simpleCompact(ctx context.Context, rows []store.MessageRow) 
 	if primary == nil {
 		return "", fmt.Errorf("compaction provider unavailable")
 	}
+	start := time.Now()
 	resp, err := primary.Chat(ctx, history, compactionSystemPrompt, nil)
+	c.router.RecordCall(ctx, primary, "compaction", resp, err, time.Since(start))
 	if err == nil {
 		return resp.Content, nil
 	}
 	slog.Warn("compaction primary failed", "provider", primary.Name(), "err", err)
 	if fallback != nil {
 		slog.Info("compaction retrying with fallback", "provider", fallback.Name())
+		fbStart := time.Now()
 		resp, err = fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+		c.router.RecordCall(ctx, fallback, "compaction", resp, err, time.Since(fbStart))
 		if err == nil {
 			return resp.Content, nil
 		}
@@ -201,12 +205,16 @@ func (c *Compacter) compactCluster(ctx context.Context, history []llm.Message) (
 	if primary == nil {
 		return "", fmt.Errorf("compaction provider unavailable")
 	}
+	start := time.Now()
 	resp, err := primary.Chat(ctx, history, compactionSystemPrompt, nil)
+	c.router.RecordCall(ctx, primary, "compaction", resp, err, time.Since(start))
 	if err == nil {
 		return resp.Content, nil
 	}
 	if fallback != nil {
+		fbStart := time.Now()
 		resp, err = fallback.Chat(ctx, history, compactionSystemPrompt, nil)
+		c.router.RecordCall(ctx, fallback, "compaction", resp, err, time.Since(fbStart))
 		if err == nil {
 			return resp.Content, nil
 		}

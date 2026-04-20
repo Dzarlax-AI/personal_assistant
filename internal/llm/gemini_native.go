@@ -111,7 +111,15 @@ type geminiResponse struct {
 			Parts []geminiPart `json:"parts"`
 		} `json:"content"`
 	} `json:"candidates"`
-	Error *struct {
+	UsageMetadata *struct {
+		PromptTokenCount        int `json:"promptTokenCount"`
+		CandidatesTokenCount    int `json:"candidatesTokenCount"`
+		CachedContentTokenCount int `json:"cachedContentTokenCount"` // Gemini context cache hit
+		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`      // Gemini 2.5 thinking tokens
+		TotalTokenCount         int `json:"totalTokenCount"`
+	} `json:"usageMetadata"`
+	ResponseID string `json:"responseId"`
+	Error      *struct {
 		Message string `json:"message"`
 		Code    int    `json:"code"`
 	} `json:"error"`
@@ -195,6 +203,15 @@ func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, sys
 				Arguments:        string(argsJSON),
 				ThoughtSignature: part.ThoughtSignature,
 			})
+		}
+	}
+	if u := gemResp.UsageMetadata; u != nil {
+		result.Usage = Usage{
+			PromptTokens:       u.PromptTokenCount,
+			CompletionTokens:   u.CandidatesTokenCount,
+			CachedPromptTokens: u.CachedContentTokenCount,
+			ReasoningTokens:    u.ThoughtsTokenCount,
+			RequestID:          gemResp.ResponseID,
 		}
 	}
 	return result, nil

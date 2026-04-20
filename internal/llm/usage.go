@@ -62,6 +62,11 @@ type TurnMeta struct {
 	// classifier calls (bypass Router.pick, role="classifier") and compaction
 	// (role="compaction"). Empty = let Router decide.
 	RoleHint string
+	// LastUsageID tracks the id of the most recent usage_log row written for
+	// this turn. Updated in-place by Router.recordUsage via the atomic pointer
+	// below so agent.Process can backfill assistant_message_id after storing
+	// the final assistant reply.
+	LastUsageID *int64
 }
 
 type turnMetaKey struct{}
@@ -76,6 +81,22 @@ func WithTurnMeta(ctx context.Context, m TurnMeta) context.Context {
 func TurnMetaFrom(ctx context.Context) (TurnMeta, bool) {
 	m, ok := ctx.Value(turnMetaKey{}).(TurnMeta)
 	return m, ok
+}
+
+// turnChatID returns the ChatID from ctx, or 0 if absent. Convenience helper.
+func turnChatID(ctx context.Context) int64 {
+	if m, ok := TurnMetaFrom(ctx); ok {
+		return m.ChatID
+	}
+	return 0
+}
+
+// turnUserMsgID returns the UserMessageID from ctx, or 0 if absent.
+func turnUserMsgID(ctx context.Context) int64 {
+	if m, ok := TurnMetaFrom(ctx); ok {
+		return m.UserMessageID
+	}
+	return 0
 }
 
 // ClassifyErrorClass maps an error into a short bucket suitable for usage_log.

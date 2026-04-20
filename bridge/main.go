@@ -53,12 +53,18 @@ type AskRequest struct {
 }
 
 type AskResponse struct {
-	Result     string `json:"result"`
-	SessionID  string `json:"session_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	DurationMs int64  `json:"duration_ms"`
-	IsError    bool   `json:"is_error"`
-	Error      string `json:"error,omitempty"`
+	Result     string  `json:"result"`
+	SessionID  string  `json:"session_id,omitempty"`
+	Model      string  `json:"model,omitempty"`
+	DurationMs int64   `json:"duration_ms"`
+	IsError    bool    `json:"is_error"`
+	Error      string  `json:"error,omitempty"`
+	// Usage metrics from the Claude CLI --output-format json stats block.
+	InputTokens             int     `json:"input_tokens,omitempty"`
+	OutputTokens            int     `json:"output_tokens,omitempty"`
+	CacheReadInputTokens    int     `json:"cache_read_input_tokens,omitempty"`
+	CacheCreateInputTokens  int     `json:"cache_creation_input_tokens,omitempty"`
+	TotalCostUSD            float64 `json:"total_cost_usd,omitempty"`
 }
 
 // --- Bridge ---
@@ -122,12 +128,29 @@ func (b *Bridge) callCLI(ctx context.Context, prompt, sessionID string, timeoutS
 
 	// Try JSON parse
 	var parsed struct {
-		Result    string `json:"result"`
-		Model     string `json:"model"`
-		SessionID string `json:"session_id"`
+		Result       string  `json:"result"`
+		Model        string  `json:"model"`
+		SessionID    string  `json:"session_id"`
+		TotalCostUSD float64 `json:"total_cost_usd"`
+		Usage        struct {
+			InputTokens             int `json:"input_tokens"`
+			OutputTokens            int `json:"output_tokens"`
+			CacheReadInputTokens    int `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(output, &parsed); err == nil && parsed.Result != "" {
-		return AskResponse{Result: parsed.Result, SessionID: parsed.SessionID, Model: parsed.Model, DurationMs: duration}
+		return AskResponse{
+			Result:                 parsed.Result,
+			SessionID:              parsed.SessionID,
+			Model:                  parsed.Model,
+			DurationMs:             duration,
+			InputTokens:            parsed.Usage.InputTokens,
+			OutputTokens:           parsed.Usage.OutputTokens,
+			CacheReadInputTokens:   parsed.Usage.CacheReadInputTokens,
+			CacheCreateInputTokens: parsed.Usage.CacheCreationInputTokens,
+			TotalCostUSD:           parsed.TotalCostUSD,
+		}
 	}
 
 	// Fallback: raw text

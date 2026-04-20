@@ -125,7 +125,10 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 	queryEmb, userMsgID := a.storeUserMessage(ctx, chatID, userMsg, queryText)
 	endEmbed()
 	// Tag ctx so Router.recordUsage can link usage_log rows to this turn.
-	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID})
+	// LastUsageID is written to by the router on every LLM call; we use it at
+	// the end to backfill assistant_message_id on the final call's row.
+	var lastUsageID int64
+	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID, LastUsageID: &lastUsageID})
 
 	// Auto-compact if needed
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
@@ -197,7 +200,10 @@ func (a *Agent) Process(ctx context.Context, chatID int64, userMsg llm.Message, 
 			if resp.Content == "" {
 				a.logger.Warn("empty response from LLM", "chat_id", chatID, "iteration", i)
 			}
-			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: resp.Content})
+			asstID := a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: resp.Content})
+			// Link the last usage_log row to this assistant message so analytics
+			// can pair cost/tokens with the actual reply the user saw.
+			a.backfillAssistantMsgID(ctx, lastUsageID, asstID)
 			// Cache only pure direct responses (first iteration, no tool calls).
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, resp.Content)
@@ -230,7 +236,8 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 	endEmbed := tr.begin("embed")
 	queryEmb, userMsgID := a.storeUserMessage(ctx, chatID, userMsg, queryText)
 	endEmbed()
-	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID})
+	var lastUsageID int64
+	ctx = llm.WithTurnMeta(ctx, llm.TurnMeta{ChatID: chatID, UserMessageID: userMsgID, LastUsageID: &lastUsageID})
 
 	if a.compacter != nil && NeedsCompaction(a.store, chatID) {
 		a.logger.Info("auto-compacting conversation", "chat_id", chatID)
@@ -334,7 +341,8 @@ func (a *Agent) ProcessStream(ctx context.Context, chatID int64, userMsg llm.Mes
 		}
 
 		if len(toolCalls) == 0 {
-			a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
+			asstID := a.store.AddMessage(chatID, llm.Message{Role: "assistant", Content: accumulated})
+			a.backfillAssistantMsgID(ctx, lastUsageID, asstID)
 			if i == 0 {
 				a.cache.Set(chatID, queryEmb, accumulated)
 			}
@@ -548,6 +556,28 @@ func (a *Agent) callTool(ctx context.Context, name, argsJSON string) (string, er
 		return a.mcp.CallTool(ctx, name, argsJSON)
 	}
 	return "", fmt.Errorf("unknown tool: %s", name)
+}
+
+// backfillAssistantMsgID pairs the final LLM call's usage_log row with the
+// assistant message it produced. Runs best-effort with a short timeout so
+// slow writes never block the user's reply. No-ops when:
+//   - the store doesn't implement llm.UsageStore (e.g. in-memory tests)
+//   - usageID is 0 (no call was recorded, or turn meta wasn't set)
+//   - asstID is 0 (assistant msg insert failed upstream)
+func (a *Agent) backfillAssistantMsgID(ctx context.Context, usageID, asstID int64) {
+	if usageID == 0 || asstID == 0 {
+		return
+	}
+	us, ok := a.store.(llm.UsageStore)
+	if !ok {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := us.UpdateAssistantMessageID(writeCtx, usageID, asstID); err != nil {
+		a.logger.Warn("backfill assistant_message_id failed", "err", err)
+	}
+	_ = ctx
 }
 
 // storeUserMessage saves the user message. If the store and MCP client both support
