@@ -14,10 +14,12 @@ import (
 // --- View data ---
 
 type uiRole struct {
-	Name      string // e.g. "default", "complex"
-	Current   string // slot name the role currently points at
-	ModelID   string // underlying model id of that slot (if OR-backed); empty otherwise
-	HasPreset bool   // true when a "Suggest" preset is defined for this role
+	Name           string       // e.g. "default", "complex"
+	Current        string       // slot name the role currently points at
+	Provider       string       // provider type backing that slot ("openrouter", "gemini", ...)
+	ModelID        string       // live model id on that slot (from ConfigurableProvider)
+	HasPreset      bool         // true when a "Suggest" preset is defined for this role
+	AvailableSlots []uiSlotInfo // slots valid for this role (multimodal is Gemini+vision only)
 }
 
 type uiSlot struct {
@@ -46,9 +48,14 @@ type uiModel struct {
 	ValuePerDollar  float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
 }
 
+type uiSlotInfo struct {
+	Name     string // slot key in config (e.g. "default-or", "simple-gemini")
+	Provider string // backend type: "openrouter", "gemini", "ollama", "claude-bridge", "local"
+}
+
 type uiRouting struct {
 	Roles    []uiRole
-	AllSlots []string // all provider keys — the set of valid targets for a role
+	AllSlots []uiSlotInfo // all provider keys with their backend type
 }
 
 type uiFilters struct {
@@ -66,11 +73,12 @@ type uiFilters struct {
 }
 
 type indexData struct {
-	ActiveTab string // "routing" or "analytics" — drives tab highlight in layout
-	Routing   uiRouting
-	Slots     []uiSlot // OpenRouter-backed slots only (for per-model assign buttons)
-	Models    []uiModel
-	Filters   uiFilters
+	ActiveTab       string // "routing" or "analytics" — drives tab highlight in layout
+	Routing         uiRouting
+	Slots           []uiSlot // slots backing the currently-browsed provider (for per-model assign buttons)
+	Models          []uiModel
+	Filters         uiFilters
+	CatalogProvider string // "openrouter" | "gemini" — which catalog is shown in the models browser
 }
 
 // --- Handlers ---
@@ -133,8 +141,19 @@ func (s *Server) handleSlotAssign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	caps := s.lookupCaps(r.Context(), modelID)
-	if err := s.router.SetProviderModel(slot, modelID, caps); err != nil {
+	// Provider type: prefer the form value (new UI — role/provider/model flow),
+	// fall back to the slot's config default for the legacy model-card path.
+	providerType := r.FormValue("provider")
+	if providerType == "" {
+		providerType = s.router.SlotProvider(slot)
+	}
+	if providerType == "" {
+		if mc, ok := s.cfgRef.Models[slot]; ok {
+			providerType = mc.Provider
+		}
+	}
+	caps := s.lookupCapsFor(r.Context(), providerType, modelID)
+	if err := s.router.SetProviderModel(slot, providerType, modelID, caps); err != nil {
 		s.logger.Warn("slot assign failed", "slot", slot, "model", modelID, "err", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -180,7 +199,9 @@ func (s *Server) handleRoleSet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleRefresh triggers a fresh OpenRouter /models fetch (+ AA scores if configured) and re-caches caps.
+// handleRefresh triggers fresh catalog fetches for OpenRouter (+ AA scores)
+// and Gemini, then re-caches caps. Which catalog the UI shows afterwards is
+// controlled by the ?provider query param (default: openrouter).
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -199,6 +220,18 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("refresh failed", "err", err)
 		http.Error(w, "upstream fetch failed: "+err.Error(), http.StatusBadGateway)
 		return
+	}
+
+	// Also refresh Gemini catalog (best effort — failures don't abort the OR path).
+	if geminiKey := s.firstGeminiAPIKey(); geminiKey != "" {
+		if gCaps, gErr := llm.FetchGeminiModels(ctx, geminiKey); gErr != nil {
+			s.logger.Warn("gemini refresh failed", "err", gErr)
+		} else if s.capStore != nil {
+			for id, c := range gCaps {
+				_ = s.capStore.PutCapabilities(ctx, "gemini", id, c)
+			}
+			s.logger.Info("gemini catalog refreshed", "count", len(gCaps))
+		}
 	}
 
 	// Overlay AA Intelligence Index scores if configured — always re-fetch on
@@ -236,13 +269,17 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildIndexData(r *http.Request) indexData {
 	q := r.URL.Query()
 	preset := q.Get("preset")
+	catalogProv := q.Get("provider")
+	if catalogProv != "gemini" {
+		catalogProv = "openrouter"
+	}
 
 	ctx5, cancel5 := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel5()
 
 	var allCaps map[string]llm.Capabilities
 	if s.capStore != nil {
-		allCaps, _ = s.capStore.GetAllCapabilities(ctx5, "openrouter")
+		allCaps, _ = s.capStore.GetAllCapabilities(ctx5, catalogProv)
 	}
 
 	// Load AA cache for extra columns (coding, agentic, speed, ttft).
@@ -296,11 +333,12 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			}
 		}
 		return indexData{
-			ActiveTab: "routing",
-			Routing:   s.buildRouting(),
-			Slots:     s.openRouterSlots(),
-			Models:    models,
-			Filters:   filters,
+			ActiveTab:       "routing",
+			Routing:         s.buildRouting(),
+			Slots:           s.allAssignableSlots(),
+			Models:          models,
+			Filters:         filters,
+			CatalogProvider: catalogProv,
 		}
 	}
 
@@ -418,10 +456,11 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	})
 
 	return indexData{
-		Routing: s.buildRouting(),
-		Slots:   s.openRouterSlots(),
-		Models:  models,
-		Filters: f,
+		Routing:         s.buildRouting(),
+		Slots:           s.allAssignableSlots(),
+		Models:          models,
+		Filters:         f,
+		CatalogProvider: catalogProv,
 	}
 }
 
@@ -470,12 +509,37 @@ func requiresTools(preset string) bool {
 
 func (s *Server) buildRouting() uiRouting {
 	cfg := s.router.GetConfig()
-	allSlots := s.router.ProviderNames()
-	sort.Strings(allSlots)
+	allSlotNames := s.router.ProviderNames()
+	sort.Strings(allSlotNames)
 
-	orSlots := map[string]string{} // slot → current model id
-	for _, sl := range s.openRouterSlots() {
-		orSlots[sl.Name] = sl.ModelID
+	// Build slot info with provider type from config.
+	allSlots := make([]uiSlotInfo, 0, len(allSlotNames))
+	for _, name := range allSlotNames {
+		prov := ""
+		if mc, ok := s.cfgRef.Models[name]; ok {
+			prov = mc.Provider
+		}
+		allSlots = append(allSlots, uiSlotInfo{Name: name, Provider: prov})
+	}
+
+	// Model id lookup across all reconfigurable providers — used to show
+	// "→ <model>" next to the current slot in the routing UI.
+	slotModelID := map[string]string{}
+	for _, sl := range s.allAssignableSlots() {
+		slotModelID[sl.Name] = sl.ModelID
+	}
+
+	// Multimodal role: by business rule, only Gemini slots whose current
+	// model supports vision are valid. Everything else would either fail or
+	// silently degrade.
+	multimodalAllowed := make([]uiSlotInfo, 0, len(allSlots))
+	for _, sl := range allSlots {
+		if sl.Provider != "gemini" {
+			continue
+		}
+		if s.visionCapsForSlot(sl.Name).Vision {
+			multimodalAllowed = append(multimodalAllowed, sl)
+		}
 	}
 
 	roleCur := map[string]string{
@@ -491,25 +555,37 @@ func (s *Server) buildRouting() uiRouting {
 	presets := presetRoles()
 	roles := make([]uiRole, 0, len(order))
 	for _, r := range order {
+		avail := allSlots
+		if r == "multimodal" {
+			avail = multimodalAllowed
+		}
+		cur := roleCur[r]
 		roles = append(roles, uiRole{
-			Name:      r,
-			Current:   roleCur[r],
-			ModelID:   orSlots[roleCur[r]],
-			HasPreset: presets[r],
+			Name:           r,
+			Current:        cur,
+			Provider:       s.router.SlotProvider(cur),
+			ModelID:        slotModelID[cur],
+			HasPreset:      presets[r],
+			AvailableSlots: avail,
 		})
 	}
 	return uiRouting{Roles: roles, AllSlots: allSlots}
 }
 
 // openRouterSlots returns the subset of configured models whose provider is
-// "openrouter" — these are the slots the admin UI lets you reassign per-model.
+// "openrouter" — kept for preset path (vision fallback lookup).
 func (s *Server) openRouterSlots() []uiSlot {
+	return s.slotsByProvider("openrouter")
+}
+
+// slotsByProvider returns all slots backed by the given provider type with
+// their live model ids (reflecting runtime SetModel swaps).
+func (s *Server) slotsByProvider(providerType string) []uiSlot {
 	var out []uiSlot
 	for name, mc := range s.cfgRef.Models {
-		if mc.Provider != "openrouter" {
+		if mc.Provider != providerType {
 			continue
 		}
-		// Live model id may differ from config if runtime-swapped.
 		modelID := mc.Model
 		if p, ok := s.providerFor(name); ok {
 			if cp, ok := p.(llm.ConfigurableProvider); ok {
@@ -524,6 +600,45 @@ func (s *Server) openRouterSlots() []uiSlot {
 	return out
 }
 
+// allAssignableSlots returns every configured LLM slot (excluding embedding
+// providers) with its LIVE model id — regardless of provider type. Used by
+// the model-catalog assign buttons so users can retarget any slot to any
+// backend via the cross-type swap flow.
+func (s *Server) allAssignableSlots() []uiSlot {
+	var out []uiSlot
+	for name, mc := range s.cfgRef.Models {
+		if mc.Provider == "hf-tei" || mc.Provider == "openai" || mc.Provider == "" {
+			continue
+		}
+		modelID := mc.Model
+		if p, ok := s.providerFor(name); ok {
+			if cp, ok := p.(llm.ConfigurableProvider); ok {
+				if cur := cp.CurrentModel(); cur != "" {
+					modelID = cur
+				}
+			}
+		}
+		out = append(out, uiSlot{Name: name, ModelID: modelID})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// visionCapsForSlot returns the live capabilities of the slot's current model.
+// Used by buildRouting to filter the multimodal dropdown.
+func (s *Server) visionCapsForSlot(slot string) llm.Capabilities {
+	if p, ok := s.providerFor(slot); ok {
+		if vp, ok := p.(llm.VisionProvider); ok {
+			// VisionProvider only exposes a bool — we need full caps.
+			_ = vp
+		}
+		if cp, ok := p.(interface{ Capabilities() llm.Capabilities }); ok {
+			return cp.Capabilities()
+		}
+	}
+	return llm.Capabilities{}
+}
+
 func (s *Server) providerFor(name string) (llm.Provider, bool) {
 	return s.router.Provider(name)
 }
@@ -531,6 +646,15 @@ func (s *Server) providerFor(name string) (llm.Provider, bool) {
 func (s *Server) firstOpenRouterAPIKey() string {
 	for _, mc := range s.cfgRef.Models {
 		if mc.Provider == "openrouter" && mc.APIKey != "" {
+			return mc.APIKey
+		}
+	}
+	return ""
+}
+
+func (s *Server) firstGeminiAPIKey() string {
+	for _, mc := range s.cfgRef.Models {
+		if mc.Provider == "gemini" && mc.APIKey != "" {
 			return mc.APIKey
 		}
 	}
@@ -594,10 +718,14 @@ func (s *Server) handlePromptSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) lookupCaps(ctx context.Context, modelID string) llm.Capabilities {
-	if s.capStore == nil {
+	return s.lookupCapsFor(ctx, "openrouter", modelID)
+}
+
+func (s *Server) lookupCapsFor(ctx context.Context, providerType, modelID string) llm.Capabilities {
+	if s.capStore == nil || providerType == "" {
 		return llm.Capabilities{}
 	}
-	c, ok, err := s.capStore.GetCapabilities(ctx, "openrouter", modelID)
+	c, ok, err := s.capStore.GetCapabilities(ctx, providerType, modelID)
 	if err != nil || !ok {
 		return llm.Capabilities{}
 	}

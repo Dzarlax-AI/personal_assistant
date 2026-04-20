@@ -185,6 +185,8 @@ func main() {
 	// CapabilityStore, then apply caps to each OR-backed provider so the router
 	// can make vision/tool-aware decisions.
 	hydrateOpenRouterCapabilities(cfg, providers, s, logger)
+	// Same for Gemini: list /v1beta/models, merge in hardcoded prices.
+	hydrateGeminiCapabilities(cfg, providers, s, logger)
 	// Overlay Artificial Analysis Intelligence Index scores onto cached caps.
 	hydrateArtificialAnalysisScores(cfg, s, logger)
 
@@ -202,10 +204,20 @@ func main() {
 		router.SetUsageStore(us)
 		logger.Info("usage logging enabled")
 	}
-	// Apply persisted per-slot OpenRouter model overrides (e.g. admin UI picked
-	// a different model last session). Pull caps from the store.
-	if orOverrides := router.TakePendingOpenRouterOverrides(); len(orOverrides) > 0 {
-		applyOpenRouterOverrides(router, s, orOverrides, logger)
+	// Register backend factories so the admin UI can rebuild a slot's provider
+	// when its backend type changes (e.g. simple: OR → Gemini).
+	initialTypes := map[string]string{}
+	for name, mc := range cfg.Models {
+		if mc.Provider != "" && mc.Provider != "hf-tei" && mc.Provider != "openai" {
+			initialTypes[name] = mc.Provider
+		}
+	}
+	router.RegisterBackendFactories(llm.BuildBackendFactories(cfg), initialTypes)
+
+	// Apply persisted per-slot overrides (provider + model). Pull caps from
+	// the store keyed by the slot's provider type.
+	if overrides := router.TakePendingSlotOverrides(); len(overrides) > 0 {
+		applySlotOverrides(router, s, overrides, logger)
 	}
 
 	// Compacter resolves its providers from the router on every call, so
@@ -346,26 +358,26 @@ func main() {
 	logger.Info("agent stopped")
 }
 
-// applyOpenRouterOverrides applies persisted per-slot model overrides to
-// OR-backed providers. Capabilities come from the CapabilityStore; slots with
-// unknown caps are still applied with zero-value caps (vision-aware routing
-// will then treat them as text-only, which is the safer default).
-func applyOpenRouterOverrides(router *llm.Router, s store.Store, overrides map[string]string, logger *slog.Logger) {
+// applySlotOverrides applies persisted per-slot (provider, model) overrides.
+// When the persisted provider type differs from the slot's initial type, the
+// router rebuilds the provider via the registered factory. Capabilities come
+// from the CapabilityStore partition matching the persisted provider type.
+func applySlotOverrides(router *llm.Router, s store.Store, overrides map[string]llm.SlotState, logger *slog.Logger) {
 	capStore, _ := s.(llm.CapabilityStore)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	for slot, modelID := range overrides {
+	for slot, st := range overrides {
 		var caps llm.Capabilities
-		if capStore != nil {
-			if c, ok, err := capStore.GetCapabilities(ctx, "openrouter", modelID); err == nil && ok {
+		if capStore != nil && st.Provider != "" {
+			if c, ok, err := capStore.GetCapabilities(ctx, st.Provider, st.Model); err == nil && ok {
 				caps = c
 			}
 		}
-		if err := router.SetProviderModel(slot, modelID, caps); err != nil {
-			logger.Warn("failed to apply OR override", "slot", slot, "model", modelID, "err", err)
+		if err := router.SetProviderModel(slot, st.Provider, st.Model, caps); err != nil {
+			logger.Warn("failed to apply slot override", "slot", slot, "provider", st.Provider, "model", st.Model, "err", err)
 			continue
 		}
-		logger.Info("applied OR model override", "slot", slot, "model", modelID,
+		logger.Info("applied slot override", "slot", slot, "provider", st.Provider, "model", st.Model,
 			"vision", caps.Vision, "tools", caps.Tools)
 	}
 }
@@ -417,6 +429,70 @@ func hydrateOpenRouterCapabilities(cfg *config.Config, providers map[string]llm.
 	// Apply caps to each OR-backed provider.
 	for name, mc := range cfg.Models {
 		if mc.Provider != "openrouter" {
+			continue
+		}
+		p, ok := providers[name]
+		if !ok {
+			continue
+		}
+		cp, ok := p.(llm.ConfigurableProvider)
+		if !ok {
+			continue
+		}
+		cur := cp.CurrentModel()
+		if c, found := caps[cur]; found {
+			cp.SetModel(cur, c)
+		}
+	}
+}
+
+// hydrateGeminiCapabilities runs once at startup. Uses the first Gemini API key
+// it finds to list the public model catalog, merges in hardcoded prices, and
+// upserts each entry into the CapabilityStore under provider key "gemini".
+// Also applies caps to each Gemini-backed provider so the router can see
+// vision/tool flags from the first request.
+func hydrateGeminiCapabilities(cfg *config.Config, providers map[string]llm.Provider, s store.Store, logger *slog.Logger) {
+	var apiKey string
+	for _, mc := range cfg.Models {
+		if mc.Provider == "gemini" && mc.APIKey != "" {
+			apiKey = mc.APIKey
+			break
+		}
+	}
+	if apiKey == "" {
+		return
+	}
+
+	capStore, _ := s.(llm.CapabilityStore)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	caps, err := llm.FetchGeminiModels(ctx, apiKey)
+	if err != nil {
+		logger.Warn("gemini /models fetch failed; using cached capabilities", "err", err)
+		if capStore != nil {
+			cached, cErr := capStore.GetAllCapabilities(ctx, "gemini")
+			if cErr != nil {
+				logger.Warn("failed to load cached gemini capabilities", "err", cErr)
+				return
+			}
+			caps = cached
+		} else {
+			return
+		}
+	} else if capStore != nil {
+		for id, c := range caps {
+			if putErr := capStore.PutCapabilities(ctx, "gemini", id, c); putErr != nil {
+				logger.Warn("gemini cache put failed", "model", id, "err", putErr)
+			}
+		}
+		logger.Info("gemini capabilities cached", "count", len(caps))
+	}
+
+	// Apply caps to each Gemini-backed provider at its currently configured model id.
+	for name, mc := range cfg.Models {
+		if mc.Provider != "gemini" {
 			continue
 		}
 		p, ok := providers[name]

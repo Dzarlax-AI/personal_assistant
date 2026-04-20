@@ -30,13 +30,19 @@ func newTestServer(t *testing.T) *Server {
 // TestTemplatesParse verifies every registered view renders without panicking
 // against minimal data. Catches template syntax errors at test time.
 func TestTemplatesParse(t *testing.T) {
+	slotInfos := []uiSlotInfo{{Name: "workhorse", Provider: "openrouter"}, {Name: "gemini-flash-lite", Provider: "gemini"}}
 	data := indexData{
 		Routing: uiRouting{
-			Roles:    []uiRole{{Name: "default", Current: "workhorse", ModelID: "deepseek/v3.1"}},
-			AllSlots: []string{"workhorse", "gemini-flash-lite"},
+			Roles: []uiRole{{
+				Name: "default", Current: "workhorse",
+				Provider: "openrouter", ModelID: "deepseek/v3.1",
+				AvailableSlots: slotInfos,
+			}},
+			AllSlots: slotInfos,
 		},
-		Slots:  []uiSlot{{Name: "workhorse", ModelID: "deepseek/v3.1"}},
-		Models: []uiModel{{ID: "anthropic/claude", PromptPrice: 3.0, CompletionPrice: 15.0, ContextLength: 200000, Vision: true, Tools: true}},
+		Slots:           []uiSlot{{Name: "workhorse", ModelID: "deepseek/v3.1"}},
+		Models:          []uiModel{{ID: "anthropic/claude", PromptPrice: 3.0, CompletionPrice: 15.0, ContextLength: 200000, Vision: true, Tools: true}},
+		CatalogProvider: "openrouter",
 	}
 	cases := map[string]any{
 		viewIndex:       data,

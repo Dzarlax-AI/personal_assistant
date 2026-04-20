@@ -1,10 +1,21 @@
 {{define "models_browser"}}
 <div id="models-browser">
+  <div class="catalog-tabs" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid rgba(0,0,0,0.1);">
+    <button type="button" class="btn btn--small {{if eq .CatalogProvider "openrouter"}}btn--primary{{else}}btn--ghost{{end}}"
+            hx-get="/models?provider=openrouter"
+            hx-target="#models-content"
+            hx-swap="outerHTML">OpenRouter</button>
+    <button type="button" class="btn btn--small {{if eq .CatalogProvider "gemini"}}btn--primary{{else}}btn--ghost{{end}}"
+            hx-get="/models?provider=gemini"
+            hx-target="#models-content"
+            hx-swap="outerHTML">Gemini</button>
+  </div>
   <form id="models-filters" class="filters"
         hx-get="/models"
         hx-target="#models-content"
         hx-swap="outerHTML"
         hx-trigger="input delay:300ms, change">
+    <input type="hidden" name="provider" value="{{.CatalogProvider}}">
     <input class="form-input" type="search" name="q" placeholder="Search model id…"
            value="{{.Filters.Search}}" style="flex:1;min-width:12rem;">
     <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>

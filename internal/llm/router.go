@@ -52,10 +52,14 @@ type routingOverrides struct {
 	Classifier       string `json:"classifier,omitempty"`
 	Compaction       string `json:"compaction,omitempty"`
 	ClassifierMinLen *int   `json:"classifier_min_len,omitempty"`
-	// Per-slot OpenRouter model overrides (slot name → model id). Lets the admin
-	// UI swap the model backing e.g. `workhorse` to `anthropic/claude-sonnet-4.5`
-	// without editing config.yaml. Applied by main.go after LoadPersistedOverrides.
+	// Legacy shape: slot name → model id. Stored when every slot was
+	// OpenRouter-backed. Read on startup and migrated to SlotOverrides.
 	OpenRouterModels map[string]string `json:"openrouter_models,omitempty"`
+	// Per-slot provider+model overrides. Applied on startup by main.go via
+	// TakePendingSlotOverrides after LoadPersistedOverrides. Lets the admin
+	// UI change a slot's backend type (e.g. `simple` from OR to Gemini)
+	// AND its model id atomically.
+	SlotOverrides map[string]slotState `json:"slot_overrides,omitempty"`
 }
 
 // Router selects the appropriate LLM provider based on context.
@@ -72,12 +76,29 @@ type Router struct {
 	usage         UsageStore    // optional; when set, Router records UsageLog after every call
 	lastRouted    string        // display name of last provider (for UI)
 	lastRoutedKey string        // map key of last provider (for tool continuation)
-	// Set by LoadPersistedOverrides; main.go drains via TakePendingOpenRouterOverrides
-	// to apply SetModel on each OR-backed provider (needs CapabilityStore).
-	pendingOpenRouterOverrides map[string]string
+	// Set by LoadPersistedOverrides; main.go drains via TakePendingSlotOverrides
+	// to apply SetProviderModel on each reconfigurable slot (needs CapabilityStore).
+	pendingSlotOverrides map[string]slotState
+
+	// Factories per provider type. Used by SetProviderModel to rebuild a slot's
+	// underlying Provider when the admin UI swaps its backend type. Populated
+	// after construction via RegisterBackendFactories.
+	factories map[string]BackendFactory
+
+	// Current provider type per slot. Populated from config + persisted on swap.
+	// Read via SlotProvider(name); written under mu by SetProviderModel.
+	slotTypes map[string]string
 
 	OnFallback func(from, to string)
 	logger     *slog.Logger
+}
+
+// slotState is the persisted shape of a single slot — provider type AND
+// model id together. Replaces the legacy "OpenRouterModels" map which could
+// only carry model id.
+type slotState struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // SetUsageStore wires the UsageLog sink. Calls before Chat() is invoked take
@@ -186,35 +207,82 @@ func (r *Router) LoadPersistedOverrides() error {
 	if ov.ClassifierMinLen != nil {
 		r.cfg.ClassifierMinLen = *ov.ClassifierMinLen
 	}
-	// Stash OpenRouter model overrides for main.go to apply (needs CapabilityStore).
-	if len(ov.OpenRouterModels) > 0 {
-		r.pendingOpenRouterOverrides = make(map[string]string, len(ov.OpenRouterModels))
-		for k, v := range ov.OpenRouterModels {
-			r.pendingOpenRouterOverrides[k] = v
+	// Stash per-slot overrides for main.go to apply (needs CapabilityStore).
+	// Prefer the new SlotOverrides shape; fall back to the legacy
+	// OpenRouterModels map (assumes provider "openrouter" for every entry).
+	r.pendingSlotOverrides = make(map[string]slotState)
+	for k, v := range ov.SlotOverrides {
+		r.pendingSlotOverrides[k] = v
+	}
+	for k, v := range ov.OpenRouterModels {
+		if _, seen := r.pendingSlotOverrides[k]; seen {
+			continue // new shape wins
 		}
+		r.pendingSlotOverrides[k] = slotState{Provider: "openrouter", Model: v}
+	}
+	if len(r.pendingSlotOverrides) == 0 {
+		r.pendingSlotOverrides = nil
 	}
 	return nil
 }
 
-// TakePendingOpenRouterOverrides returns the loaded per-slot model overrides
-// and clears the internal buffer. Call once after LoadPersistedOverrides.
-func (r *Router) TakePendingOpenRouterOverrides() map[string]string {
+// TakePendingSlotOverrides returns the loaded per-slot (provider, model)
+// overrides and clears the internal buffer. Call once after LoadPersistedOverrides.
+func (r *Router) TakePendingSlotOverrides() map[string]slotState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	m := r.pendingOpenRouterOverrides
-	r.pendingOpenRouterOverrides = nil
+	m := r.pendingSlotOverrides
+	r.pendingSlotOverrides = nil
 	return m
 }
 
-// currentOpenRouterModels collects the current model id of every provider that
-// implements ConfigurableProvider (OR-backed in practice).
+// SlotState is a public view of a slot's current (provider, model) pair, used
+// by the admin UI.
+type SlotState = slotState
+
+// SlotProvider returns the provider type currently backing the given slot,
+// or "" if unknown. Used by the admin UI to render the current selection.
+func (r *Router) SlotProvider(slot string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.slotTypes[slot]
+}
+
+// RegisterBackendFactories attaches the per-type factory map (built by
+// BuildBackendFactories from the startup config) to the router. Must be
+// called before SetProviderModel is used with a different provider type.
+// Also seeds slotTypes from the initial providers map so persistence knows
+// each slot's starting backend.
+func (r *Router) RegisterBackendFactories(factories map[string]BackendFactory, initialTypes map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.factories = factories
+	if r.slotTypes == nil {
+		r.slotTypes = map[string]string{}
+	}
+	for k, v := range initialTypes {
+		r.slotTypes[k] = v
+	}
+}
+
+// currentSlotStates collects (provider, model) for every slot that has an
+// active entry in slotTypes. Uses CurrentModel when the provider implements
+// ConfigurableProvider; else falls back to the model baked into Provider.Name().
 // Must be called with r.mu held.
-func (r *Router) currentOpenRouterModels() map[string]string {
-	out := map[string]string{}
-	for name, p := range r.providers {
-		if cp, ok := p.(ConfigurableProvider); ok {
-			out[name] = cp.CurrentModel()
+func (r *Router) currentSlotStates() map[string]slotState {
+	out := map[string]slotState{}
+	for name := range r.providers {
+		pType := r.slotTypes[name]
+		if pType == "" {
+			continue
 		}
+		var model string
+		if p := r.providers[name]; p != nil {
+			if cp, ok := p.(ConfigurableProvider); ok {
+				model = cp.CurrentModel()
+			}
+		}
+		out[name] = slotState{Provider: pType, Model: model}
 	}
 	if len(out) == 0 {
 		return nil
@@ -242,7 +310,7 @@ func (r *Router) saveOverrides() {
 		Classifier:       r.cfg.Classifier,
 		Compaction:       r.cfg.Compaction,
 		ClassifierMinLen: &minLen,
-		OpenRouterModels: r.currentOpenRouterModels(),
+		SlotOverrides:    r.currentSlotStates(),
 	}
 	data, err := json.Marshal(ov)
 	if err != nil {
@@ -281,21 +349,66 @@ func (r *Router) Provider(name string) (Provider, bool) {
 	return p, ok
 }
 
-// SetProviderModel swaps the underlying model id of a provider slot and
-// persists the choice. Returns an error if the slot does not exist or does
-// not support runtime reconfiguration.
-func (r *Router) SetProviderModel(slot, modelID string, caps Capabilities) error {
+// SetProviderModel swaps the backend behind a slot and/or its model id.
+//
+// When providerType matches the slot's current type, the underlying provider
+// instance is reused — only SetModel is called (cheap; does not churn HTTP
+// connection pools). When providerType differs, the router calls the
+// registered factory for that type to build a fresh Provider and replaces
+// the slot's instance atomically under r.mu. In-flight requests keep the
+// old instance; new requests use the new one.
+//
+// Returns an error if:
+//   - the slot is unknown,
+//   - providerType is empty and the slot's current provider is not
+//     ConfigurableProvider (nothing to swap),
+//   - providerType is set but no factory is registered for it,
+//   - the factory returns an error constructing the new provider.
+func (r *Router) SetProviderModel(slot, providerType, modelID string, caps Capabilities) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	p, ok := r.providers[slot]
 	if !ok {
 		return errors.New("unknown slot: " + slot)
 	}
-	cp, ok := p.(ConfigurableProvider)
-	if !ok {
-		return errors.New("slot is not reconfigurable: " + slot)
+
+	currentType := r.slotTypes[slot]
+	// Caller didn't specify a type — keep the current one. This is the
+	// same-slot reassign path (admin UI "swap model but stay on OR").
+	if providerType == "" {
+		providerType = currentType
 	}
-	cp.SetModel(modelID, caps)
+
+	// Same type — just swap the model id on the existing instance.
+	if providerType == currentType || currentType == "" {
+		cp, ok := p.(ConfigurableProvider)
+		if !ok {
+			return errors.New("slot is not reconfigurable: " + slot)
+		}
+		cp.SetModel(modelID, caps)
+		if r.slotTypes == nil {
+			r.slotTypes = map[string]string{}
+		}
+		r.slotTypes[slot] = providerType
+		r.saveOverrides()
+		return nil
+	}
+
+	// Cross-type swap — rebuild via factory.
+	factory, err := factoryForType(r.factories, providerType)
+	if err != nil {
+		return err
+	}
+	newProv, err := factory(modelID, caps)
+	if err != nil {
+		return fmt.Errorf("build %s provider: %w", providerType, err)
+	}
+	r.providers[slot] = newProv
+	if r.slotTypes == nil {
+		r.slotTypes = map[string]string{}
+	}
+	r.slotTypes[slot] = providerType
 	r.saveOverrides()
 	return nil
 }

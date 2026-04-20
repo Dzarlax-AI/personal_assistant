@@ -6,10 +6,11 @@
     <td>
       <div class="model-id">{{.ID}}</div>
       <div class="assign-buttons">
+        {{$prov := $.CatalogProvider}}
         {{range $.Slots}}
         <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
                 hx-post="/slots/{{.Name}}/assign"
-                hx-vals='{"model_id":"{{$modelID}}"}'
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$prov}}"}'
                 hx-target="#routing-section"
                 hx-swap="innerHTML">
           {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}

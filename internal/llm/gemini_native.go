@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"telegram-agent/internal/config"
@@ -23,10 +24,16 @@ var geminiHTTPClient = &http.Client{Timeout: geminiDefaultTimeout}
 // GeminiNativeProvider uses the native Gemini generateContent API.
 // Supports inline audio/video/documents and native function calling.
 type GeminiNativeProvider struct {
-	model     string
 	apiKey    string
 	maxTokens int
 	provName  string
+
+	// Mutable state: model id and capabilities can be swapped at runtime
+	// by the admin UI via SetModel. Read under RLock for the duration
+	// of a request so in-flight calls see a consistent snapshot.
+	mu    sync.RWMutex
+	model string
+	caps  Capabilities
 }
 
 // NewGeminiNative creates a provider using the native Gemini API.
@@ -50,7 +57,31 @@ func NewGeminiNative(cfg config.ModelConfig) (*GeminiNativeProvider, error) {
 }
 
 func (p *GeminiNativeProvider) Name() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.provName + "/" + p.model
+}
+
+// SetModel atomically swaps the model id and capabilities. Used by admin UI.
+func (p *GeminiNativeProvider) SetModel(modelID string, caps Capabilities) {
+	p.mu.Lock()
+	p.model = modelID
+	p.caps = caps
+	p.mu.Unlock()
+}
+
+// CurrentModel returns the currently active model id.
+func (p *GeminiNativeProvider) CurrentModel() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.model
+}
+
+// Capabilities returns the current model's capabilities.
+func (p *GeminiNativeProvider) Capabilities() Capabilities {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.caps
 }
 
 // --- Native Gemini request/response types ---
@@ -126,6 +157,9 @@ type geminiResponse struct {
 }
 
 func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (Response, error) {
+	p.mu.RLock()
+	model := p.model
+	p.mu.RUnlock()
 	req := geminiRequest{
 		Contents: p.buildContents(messages),
 		GenerationConfig: &geminiGenerationConfig{
@@ -150,7 +184,7 @@ func (p *GeminiNativeProvider) Chat(ctx context.Context, messages []Message, sys
 		return Response{}, fmt.Errorf("%s: marshal: %w", p.provName, err)
 	}
 
-	url := fmt.Sprintf(geminiAPIBase, p.model)
+	url := fmt.Sprintf(geminiAPIBase, model)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return Response{}, fmt.Errorf("%s: request: %w", p.provName, err)
