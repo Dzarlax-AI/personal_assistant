@@ -55,7 +55,19 @@
           <th>Caps</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"score","dir":"{{if and (eq $s "score") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="Artificial Analysis Intelligence Index">AA Score{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="AA Intelligence Index">Intel{{if eq $s "score"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"coding","dir":"{{if and (eq $s "coding") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="AA Coding Index">Code{{if eq $s "coding"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"agentic","dir":"{{if and (eq $s "agentic") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="AA Agentic Index">Agent{{if eq $s "agentic"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"speed","dir":"{{if and (eq $s "speed") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="Median output tokens/sec">Speed{{if eq $s "speed"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"ttft","dir":"{{if and (eq $s "ttft") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
+              style="cursor:pointer" title="Median time to first token (sec)">TTFT{{if eq $s "ttft"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>
       </thead>
       {{template "models_tbody" .}}

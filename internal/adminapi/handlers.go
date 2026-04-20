@@ -33,7 +33,11 @@ type uiModel struct {
 	Tools           bool
 	Reasoning       bool
 	Free            bool
-	Score           float64 // Artificial Analysis Intelligence Index (0 = unknown)
+	Score           float64 // AA Intelligence Index
+	CodingIndex     float64 // AA Coding Index
+	AgenticIndex    float64 // AA Agentic Index
+	SpeedTPS        float64 // median output tokens/sec
+	TTFT            float64 // median time-to-first-token, seconds
 }
 
 type uiRouting struct {
@@ -214,11 +218,20 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	q := r.URL.Query()
 	preset := q.Get("preset")
 
+	ctx5, cancel5 := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel5()
+
 	var allCaps map[string]llm.Capabilities
 	if s.capStore != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		allCaps, _ = s.capStore.GetAllCapabilities(ctx, "openrouter")
+		allCaps, _ = s.capStore.GetAllCapabilities(ctx5, "openrouter")
+	}
+
+	// Load AA cache for extra columns (coding, agentic, speed, ttft).
+	var aaModels map[string]llm.AAModelInfo
+	if s.settings != nil {
+		if cache, _ := llm.LoadAACache(ctx5, s.settings); cache != nil {
+			aaModels = cache.Models
+		}
 	}
 
 	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
@@ -283,7 +296,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		if f.Reasoning && !c.Reasoning {
 			continue
 		}
-		models = append(models, uiModel{
+		m := uiModel{
 			ID:              id,
 			PromptPrice:     c.PromptPrice,
 			CompletionPrice: c.CompletionPrice,
@@ -293,7 +306,16 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			Reasoning:       c.Reasoning,
 			Free:            free,
 			Score:           c.Score,
-		})
+		}
+		if aaModels != nil {
+			if info := llm.LookupAAInfo(id, aaModels); info != nil {
+				m.CodingIndex = info.CodingIndex
+				m.AgenticIndex = info.AgenticIndex
+				m.SpeedTPS = info.SpeedTPS
+				m.TTFT = info.TTFT
+			}
+		}
+		models = append(models, m)
 	}
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
@@ -303,6 +325,14 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			less = models[i].CompletionPrice < models[j].CompletionPrice
 		case "score":
 			less = models[i].Score < models[j].Score
+		case "coding":
+			less = models[i].CodingIndex < models[j].CodingIndex
+		case "agentic":
+			less = models[i].AgenticIndex < models[j].AgenticIndex
+		case "speed":
+			less = models[i].SpeedTPS < models[j].SpeedTPS
+		case "ttft":
+			less = models[i].TTFT < models[j].TTFT
 		case "context":
 			less = models[i].ContextLength < models[j].ContextLength
 		case "id":

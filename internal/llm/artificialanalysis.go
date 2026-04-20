@@ -18,15 +18,16 @@ var aaHTTPClient = &http.Client{Timeout: 20 * time.Second}
 // AAModelInfo holds normalized AA data for a single model, keyed by the
 // OR-compatible slug (dots replaced with dashes in version segments).
 type AAModelInfo struct {
-	AASlug      string  `json:"aa_slug"`
-	CreatorSlug string  `json:"creator_slug"`
-	Score       float64 `json:"score,omitempty"`       // Intelligence Index
-	CodingIndex float64 `json:"coding_index,omitempty"` // Coding Index
-	MathIndex   float64 `json:"math_index,omitempty"`   // Math Index
-	SpeedTPS    float64 `json:"speed_tps,omitempty"`    // median output tokens/sec
-	TTFT        float64 `json:"ttft_s,omitempty"`       // median time-to-first-token, seconds
-	PriceInput  float64 `json:"price_input_1m,omitempty"`
-	PriceOutput float64 `json:"price_output_1m,omitempty"`
+	AASlug       string  `json:"aa_slug"`
+	CreatorSlug  string  `json:"creator_slug"`
+	Score        float64 `json:"score,omitempty"`        // Intelligence Index
+	CodingIndex  float64 `json:"coding_index,omitempty"`  // Coding Index
+	MathIndex    float64 `json:"math_index,omitempty"`    // Math Index
+	AgenticIndex float64 `json:"agentic_index,omitempty"` // Agentic Index
+	SpeedTPS     float64 `json:"speed_tps,omitempty"`     // median output tokens/sec
+	TTFT         float64 `json:"ttft_s,omitempty"`        // median time-to-first-token, seconds
+	PriceInput   float64 `json:"price_input_1m,omitempty"`
+	PriceOutput  float64 `json:"price_output_1m,omitempty"`
 }
 
 // AACache is the kv_settings blob stored under aaSettingsKey.
@@ -166,15 +167,15 @@ var creatorAliases = map[string]string{
 //  5. Anthropic word-order swap: claude-{family}-{ver} ↔ claude-{ver}-{family}
 func MergeAAScores(caps map[string]Capabilities, models map[string]AAModelInfo) {
 	for id, c := range caps {
-		if info := lookupAAInfo(id, models); info != nil && info.Score > 0 {
+		if info := LookupAAInfo(id, models); info != nil && info.Score > 0 {
 			c.Score = info.Score
 			caps[id] = c
 		}
 	}
 }
 
-// lookupAAInfo tries all mapping strategies for a single OR model ID.
-func lookupAAInfo(orID string, models map[string]AAModelInfo) *AAModelInfo {
+// LookupAAInfo tries all mapping strategies for a single OR model ID.
+func LookupAAInfo(orID string, models map[string]AAModelInfo) *AAModelInfo {
 	norm := strings.ReplaceAll(orID, ".", "-")
 
 	// 1. Exact match after dot→dash normalization.
