@@ -24,7 +24,7 @@ func newTestServer(t *testing.T) *Server {
 		Listen:           ":0",
 		Token:            "secret-token",
 		TrustForwardAuth: false,
-	}, router, nil, cfg, slog.Default())
+	}, router, nil, nil, cfg, slog.Default())
 }
 
 // TestTemplatesParse verifies every registered view renders without panicking
