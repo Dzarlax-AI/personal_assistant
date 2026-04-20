@@ -42,36 +42,45 @@ type expensiveTurnView struct {
 	Answer     string // first line, up to 200 chars
 }
 
-// dailyChart is a pre-sized SVG description rendered in the template — keeps
-// the template free of math and the HTML free of JS dependencies.
-//
-// Layout: calls are rendered as solid vertical bars (primary axis, left).
-// Cost is a line + point overlay on a secondary axis (right). Two visually
-// distinct elements — you can tell at a glance whether a day was "lots of
-// cheap calls" or "few expensive calls".
+// dailyChart describes two stacked SVG charts (calls on top, cost below)
+// that share the same X-axis layout so day columns line up exactly. Each
+// chart carries its own Y-axis ticks with labels. Pre-computed here so the
+// template stays math-free.
 type dailyChart struct {
-	Width     int
-	Height    int
-	PlotTop   int // y coordinate of the top of the plotting area
-	PlotBot   int // y coordinate of the axis line
-	Bars      []dailyBar
-	CostPath  string // SVG path data "M x y L x y L ..." for the cost line
-	CostDots  []dailyBar // reuses bar fields for dot positions (X + CostY)
-	MaxCalls  int
+	Width      int
+	Height     int // per-chart height (each chart renders separately)
+	PlotTop    int
+	PlotBot    int
+	PlotLeft   int // x-coordinate of the Y-axis line
+	PlotRight  int
+	Days       int
+	// Calls series (bar chart, top)
+	CallsBars  []chartBar
+	CallsYAxis []yTick
+	MaxCalls   int
+	// Cost series (bar chart, bottom)
+	CostBars  []chartBar
+	CostYAxis []yTick
 	MaxCost   float64
-	Days      int
-	XAxisTags []xAxisTag // sparse labels at first/middle/last day
+	// Shared X-axis — applied to the cost chart only (bottom of the stack)
+	XAxisTags []xAxisTag
 }
 
-type dailyBar struct {
+type chartBar struct {
 	X        int
 	W        int
-	CallsY   int
-	CallsH   int
-	CostY    int
+	Y        int
+	H        int
 	DayLabel string
-	Calls    int
-	CostUSD  float64
+	// Tooltip content — both metrics shown on hover so users don't need to
+	// cross-reference.
+	Calls   int
+	CostUSD float64
+}
+
+type yTick struct {
+	Y     int
+	Label string
 }
 
 type xAxisTag struct {
@@ -191,25 +200,27 @@ func resolvePeriod(period string) (time.Time, string) {
 	}
 }
 
-// buildDailyChart turns a slice of UsageDayBucket into SVG coordinates. Calls
-// are bars; cost is an overlaid line with markers. Size is fixed 480×120;
-// bar width is adaptive so sparse data (1-3 days) still looks like a chart
-// and not one lonely pixel-wide sliver.
+// buildDailyChart produces two synchronized SVG chart descriptions (calls
+// on top, cost on bottom) sharing padLeft/padRight + slot widths so day
+// columns line up vertically. Size: 520×100 per chart, Y-axis on the left
+// with up to 3 tick labels (0 / mid / max).
 func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 	const (
-		width     = 480
-		height    = 120
-		padLeft   = 12
-		padRight  = 12
-		padTop    = 10
-		padBottom = 22
+		width     = 520
+		height    = 100
+		padLeft   = 48 // room for Y-axis labels
+		padRight  = 8
+		padTop    = 8
+		padBottom = 20
 	)
 	c := dailyChart{
-		Width:   width,
-		Height:  height,
-		PlotTop: padTop,
-		PlotBot: height - padBottom,
-		Days:    len(buckets),
+		Width:     width,
+		Height:    height,
+		PlotTop:   padTop,
+		PlotBot:   height - padBottom,
+		PlotLeft:  padLeft,
+		PlotRight: width - padRight,
+		Days:      len(buckets),
 	}
 	if len(buckets) == 0 {
 		return c
@@ -231,12 +242,10 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 		c.MaxCost = 0.0001
 	}
 
-	plotW := width - padLeft - padRight
+	plotW := c.PlotRight - c.PlotLeft
 	plotH := c.PlotBot - c.PlotTop
 	slot := float64(plotW) / float64(len(buckets))
-	// Bars are up to 60% of a slot, capped at 28px to look sensible for
-	// sparse data without becoming huge.
-	barW := int(slot * 0.6)
+	barW := int(slot * 0.65)
 	if barW < 2 {
 		barW = 2
 	}
@@ -244,42 +253,51 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 		barW = 28
 	}
 
-	var pathBuilder strings.Builder
 	for i, b := range buckets {
-		slotCenter := padLeft + int((float64(i)+0.5)*slot)
+		slotCenter := c.PlotLeft + int((float64(i)+0.5)*slot)
 		barX := slotCenter - barW/2
+		dayLabel := b.Day.Format("01-02")
 
+		// Calls bar
 		callsH := int(float64(b.Calls) / float64(c.MaxCalls) * float64(plotH))
 		if callsH < 0 {
 			callsH = 0
 		}
-		costY := c.PlotBot - int(b.CostUSD/c.MaxCost*float64(plotH))
+		c.CallsBars = append(c.CallsBars, chartBar{
+			X: barX, W: barW,
+			Y: c.PlotBot - callsH, H: callsH,
+			DayLabel: dayLabel, Calls: b.Calls, CostUSD: b.CostUSD,
+		})
 
-		bar := dailyBar{
-			X:        barX,
-			W:        barW,
-			CallsY:   c.PlotBot - callsH,
-			CallsH:   callsH,
-			CostY:    costY,
-			DayLabel: b.Day.Format("01-02"),
-			Calls:    b.Calls,
-			CostUSD:  b.CostUSD,
+		// Cost bar
+		costH := int(b.CostUSD / c.MaxCost * float64(plotH))
+		if costH < 0 {
+			costH = 0
 		}
-		c.Bars = append(c.Bars, bar)
-		c.CostDots = append(c.CostDots, dailyBar{X: slotCenter, CostY: costY, DayLabel: bar.DayLabel, Calls: bar.Calls, CostUSD: bar.CostUSD})
-
-		if i == 0 {
-			fmt.Fprintf(&pathBuilder, "M %d %d", slotCenter, costY)
-		} else {
-			fmt.Fprintf(&pathBuilder, " L %d %d", slotCenter, costY)
-		}
+		c.CostBars = append(c.CostBars, chartBar{
+			X: barX, W: barW,
+			Y: c.PlotBot - costH, H: costH,
+			DayLabel: dayLabel, Calls: b.Calls, CostUSD: b.CostUSD,
+		})
 	}
-	c.CostPath = pathBuilder.String()
 
-	// X-axis labels: first, middle, last — keeps the axis readable on both
-	// 1-day and 30-day views without collisions.
+	// Y-axis ticks: 0, max/2, max — 3 lines only, keeps chart uncluttered
+	// while giving the reader concrete numbers to reference.
+	c.CallsYAxis = []yTick{
+		{Y: c.PlotBot, Label: "0"},
+		{Y: c.PlotTop + (c.PlotBot-c.PlotTop)/2, Label: intFmt(c.MaxCalls / 2)},
+		{Y: c.PlotTop, Label: intFmt(c.MaxCalls)},
+	}
+	c.CostYAxis = []yTick{
+		{Y: c.PlotBot, Label: "$0"},
+		{Y: c.PlotTop + (c.PlotBot-c.PlotTop)/2, Label: priceFmt(c.MaxCost / 2)},
+		{Y: c.PlotTop, Label: priceFmt(c.MaxCost)},
+	}
+
+	// X-axis — sparse labels at first / middle / last day, applied to the
+	// bottom chart in the template.
 	addTag := func(i int) {
-		slotCenter := padLeft + int((float64(i)+0.5)*slot)
+		slotCenter := c.PlotLeft + int((float64(i)+0.5)*slot)
 		c.XAxisTags = append(c.XAxisTags, xAxisTag{X: slotCenter, Label: buckets[i].Day.Format("01-02")})
 	}
 	addTag(0)

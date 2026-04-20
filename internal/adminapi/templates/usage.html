@@ -56,40 +56,53 @@
     </div>
   </div>
 
-  <!-- Daily chart (last 30 days regardless of period toggle) -->
+  <!-- Daily charts (last 30 days regardless of period toggle) -->
   {{if gt .DailyChart.Days 0}}
+  {{$c := .DailyChart}}
   <div class="usage-chart-wrap">
     <div class="usage-chart-title">
-      Daily calls & cost — {{.DailyChart.Days}} day(s) with activity in the last 30.
-      <span style="color:var(--text-secondary);">Peak: {{.DailyChart.MaxCalls}} calls · {{priceFmt .DailyChart.MaxCost}}.</span>
+      Daily activity — {{$c.Days}} day(s) with usage in the last 30.
     </div>
-    <svg viewBox="0 0 {{.DailyChart.Width}} {{.DailyChart.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
-      <!-- baseline -->
-      <line x1="12" y1="{{.DailyChart.PlotBot}}" x2="{{sub .DailyChart.Width 12}}" y2="{{.DailyChart.PlotBot}}" stroke="#ccc" stroke-width="1" />
-      <!-- calls bars -->
-      {{range .DailyChart.Bars}}
-        <rect x="{{.X}}" y="{{.CallsY}}" width="{{.W}}" height="{{.CallsH}}" fill="#3b82f6" opacity="0.75" rx="1">
-          <title>{{.DayLabel}}: {{.Calls}} calls · {{priceFmt .CostUSD}}</title>
+
+    <!-- Calls chart (top) -->
+    <svg viewBox="0 0 {{$c.Width}} {{$c.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
+      <!-- y-axis line -->
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.PlotTop}}" x2="{{$c.PlotLeft}}" y2="{{$c.PlotBot}}" stroke="#bbb" />
+      <!-- y-axis ticks + labels + horizontal guides -->
+      {{range $c.CallsYAxis}}
+        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="#bbb" />
+        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="#eee" stroke-dasharray="2 3" />
+        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="end">{{.Label}}</text>
+      {{end}}
+      <!-- y-axis label -->
+      <text x="10" y="{{add $c.PlotTop 4}}" font-size="9" fill="var(--text-secondary, #888)" font-weight="600">calls</text>
+      <!-- bars -->
+      {{range $c.CallsBars}}
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="#3b82f6" opacity="0.8" rx="1">
+          <title>{{.DayLabel}}&#10;{{.Calls}} calls · {{priceFmt .CostUSD}}</title>
         </rect>
       {{end}}
-      <!-- cost line overlay -->
-      {{if .DailyChart.CostPath}}
-      <path d="{{.DailyChart.CostPath}}" fill="none" stroke="#10b981" stroke-width="1.5" />
+    </svg>
+
+    <!-- Cost chart (bottom) — same X-axis layout for day-by-day comparison -->
+    <svg viewBox="0 0 {{$c.Width}} {{$c.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.PlotTop}}" x2="{{$c.PlotLeft}}" y2="{{$c.PlotBot}}" stroke="#bbb" />
+      {{range $c.CostYAxis}}
+        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="#bbb" />
+        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="#eee" stroke-dasharray="2 3" />
+        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="end">{{.Label}}</text>
       {{end}}
-      {{range .DailyChart.CostDots}}
-        <circle cx="{{.X}}" cy="{{.CostY}}" r="2.5" fill="#10b981">
-          <title>{{.DayLabel}}: {{priceFmt .CostUSD}} · {{.Calls}} calls</title>
-        </circle>
+      <text x="10" y="{{add $c.PlotTop 4}}" font-size="9" fill="var(--text-secondary, #888)" font-weight="600">cost</text>
+      {{range $c.CostBars}}
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="#10b981" opacity="0.8" rx="1">
+          <title>{{.DayLabel}}&#10;{{priceFmt .CostUSD}} · {{.Calls}} calls</title>
+        </rect>
       {{end}}
-      <!-- x-axis labels (sparse) -->
-      {{range .DailyChart.XAxisTags}}
-        <text x="{{.X}}" y="{{sub $.DailyChart.Height 6}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="middle">{{.Label}}</text>
+      <!-- Shared X-axis labels: only on the bottom chart so the stack reads as one figure. -->
+      {{range $c.XAxisTags}}
+        <text x="{{.X}}" y="{{sub $c.Height 4}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="middle">{{.Label}}</text>
       {{end}}
     </svg>
-    <div class="usage-chart-legend">
-      <span><span class="usage-chart-legend__swatch" style="background:#3b82f6;opacity:0.75;"></span> calls</span>
-      <span><span class="usage-chart-legend__swatch" style="background:#10b981;"></span> cost (USD)</span>
-    </div>
   </div>
   {{end}}
 
