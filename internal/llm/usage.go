@@ -32,10 +32,67 @@ type UsageLog struct {
 }
 
 // UsageStore persists UsageLog records and exposes aggregation queries used
-// by the admin UI (implemented in Stage A.3).
+// by the admin UI.
 type UsageStore interface {
 	PutUsage(ctx context.Context, u UsageLog) (int64, error)
 	UpdateAssistantMessageID(ctx context.Context, usageID, msgID int64) error
+
+	// Aggregations
+	UsageTotals(ctx context.Context, since time.Time) (UsageTotals, error)
+	UsageByDay(ctx context.Context, since time.Time) ([]UsageDayBucket, error)
+	UsageByModel(ctx context.Context, since time.Time, limit int) ([]UsageModelRow, error)
+	UsageByRole(ctx context.Context, since time.Time) ([]UsageRoleRow, error)
+	ExpensiveTurns(ctx context.Context, since time.Time, limit int) ([]ExpensiveTurn, error)
+}
+
+// UsageTotals aggregates summary metrics over a time window.
+type UsageTotals struct {
+	Calls              int
+	PromptTokens       int
+	CompletionTokens   int
+	CachedPromptTokens int
+	ReasoningTokens    int
+	CostUSD            float64
+	ErrorCount         int
+}
+
+// UsageDayBucket is a per-day aggregate.
+type UsageDayBucket struct {
+	Day              time.Time
+	Calls            int
+	PromptTokens     int
+	CompletionTokens int
+	CostUSD          float64
+}
+
+// UsageModelRow aggregates per model_id (scoped to a provider).
+type UsageModelRow struct {
+	Provider         string
+	ModelID          string
+	Calls            int
+	PromptTokens     int
+	CompletionTokens int
+	CostUSD          float64
+}
+
+// UsageRoleRow aggregates per routing role.
+type UsageRoleRow struct {
+	Role    string
+	Calls   int
+	CostUSD float64
+}
+
+// ExpensiveTurn links a high-cost usage_log row to the user question and
+// assistant answer that produced it.
+type ExpensiveTurn struct {
+	Ts       time.Time
+	ChatID   int64
+	Role     string
+	ModelID  string
+	CostUSD  float64
+	Tokens   int // prompt + completion
+	Question string
+	Answer   string
 }
 
 // Usage is a per-response token breakdown attached to Response. Providers

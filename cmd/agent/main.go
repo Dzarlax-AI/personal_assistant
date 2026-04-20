@@ -307,7 +307,8 @@ func main() {
 	if cfg.AdminAPI.Enabled {
 		capStore, _ := s.(llm.CapabilityStore)
 		settingsStore, _ := s.(llm.SettingsStore)
-		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, settingsStore, cfg, logger)
+		usageStore, _ := s.(llm.UsageStore)
+		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, settingsStore, usageStore, cfg, logger)
 		if err := adminSrv.Start(); err != nil {
 			logger.Error("admin API failed to start", "err", err)
 		} else {

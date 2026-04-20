@@ -16,6 +16,7 @@ const (
 	viewRouting       = "routing"
 	viewModelsBrowser = "models_browser"
 	viewModelsContent = "models_content"
+	viewUsage         = "usage"
 )
 
 // tmpls is the parsed template set. Entries are keyed by view name and
@@ -36,6 +37,7 @@ var tmpls = func() map[string]*template.Template {
 		viewRouting:       "templates/routing.html",
 		viewModelsBrowser: "templates/partials_models_browser.html",
 		viewModelsContent: "templates/partials_models_browser.html",
+		viewUsage:         "templates/usage.html",
 	}
 	funcs := template.FuncMap{
 		"priceUSD": func(v float64) string {
@@ -53,6 +55,21 @@ var tmpls = func() map[string]*template.Template {
 				return fmt.Sprintf("%dM", n/1_000_000)
 			case n >= 1000:
 				return fmt.Sprintf("%dk", n/1000)
+			case n > 0:
+				return fmt.Sprintf("%d", n)
+			}
+			return "—"
+		},
+		"priceFmt": priceFmt,
+		"intFmt":   intFmt,
+		"add":      func(a, b int) int { return a + b },
+		"sub":      func(a, b int) int { return a - b },
+		"tokenShort": func(n int) string {
+			switch {
+			case n >= 1_000_000:
+				return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+			case n >= 1000:
+				return fmt.Sprintf("%.1fk", float64(n)/1000)
 			case n > 0:
 				return fmt.Sprintf("%d", n)
 			}

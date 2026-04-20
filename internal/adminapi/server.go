@@ -19,29 +19,31 @@ import (
 // Server wraps an http.Server + the upstream dependencies it needs to render
 // and mutate routing state.
 type Server struct {
-	cfg      config.AdminAPIConfig
-	router   *llm.Router
-	capStore llm.CapabilityStore
-	settings llm.SettingsStore // for AA cache persistence; may be nil
-	cfgRef   *config.Config    // needed for enumerating OpenRouter slots
-	logger   *slog.Logger
+	cfg        config.AdminAPIConfig
+	router     *llm.Router
+	capStore   llm.CapabilityStore
+	settings   llm.SettingsStore // for AA cache persistence; may be nil
+	usageStore llm.UsageStore    // for Usage/Cost section; may be nil
+	cfgRef     *config.Config    // needed for enumerating OpenRouter slots
+	logger     *slog.Logger
 
 	httpSrv *http.Server
 }
 
 // New constructs the admin API server but does not start it. Call Start to
 // bind the listener.
-func New(cfg config.AdminAPIConfig, router *llm.Router, capStore llm.CapabilityStore, settings llm.SettingsStore, cfgRef *config.Config, logger *slog.Logger) *Server {
+func New(cfg config.AdminAPIConfig, router *llm.Router, capStore llm.CapabilityStore, settings llm.SettingsStore, usageStore llm.UsageStore, cfgRef *config.Config, logger *slog.Logger) *Server {
 	if cfg.ForwardAuthHeader == "" {
 		cfg.ForwardAuthHeader = "X-authentik-username"
 	}
 	return &Server{
-		cfg:      cfg,
-		router:   router,
-		capStore: capStore,
-		settings: settings,
-		cfgRef:   cfgRef,
-		logger:   logger,
+		cfg:        cfg,
+		router:     router,
+		capStore:   capStore,
+		settings:   settings,
+		usageStore: usageStore,
+		cfgRef:     cfgRef,
+		logger:     logger,
 	}
 }
 
@@ -109,4 +111,5 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/slots/", authed(http.HandlerFunc(s.handleSlotAssign))) // POST /slots/{slot}/assign
 	mux.Handle("/routing/", authed(http.HandlerFunc(s.handleRoleSet))) // POST /routing/{role}/set
 	mux.Handle("/refresh", authed(http.HandlerFunc(s.handleRefresh)))
+	mux.Handle("/usage", authed(http.HandlerFunc(s.handleUsage)))
 }

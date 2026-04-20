@@ -1,0 +1,158 @@
+{{define "usage"}}
+<div id="usage-section">
+  <div class="usage-toolbar">
+    <strong>Usage & Cost</strong>
+    <span style="color:var(--text-secondary);margin-left:0.5rem;">— window:</span>
+    {{- $p := .Period}}
+    <a class="btn btn--small {{if eq $p "24h"}}btn--primary{{else}}btn--ghost{{end}}"
+       hx-get="/usage?period=24h" hx-target="#usage-section" hx-swap="outerHTML">24h</a>
+    <a class="btn btn--small {{if eq $p "7d"}}btn--primary{{else}}btn--ghost{{end}}"
+       hx-get="/usage?period=7d"  hx-target="#usage-section" hx-swap="outerHTML">7d</a>
+    <a class="btn btn--small {{if eq $p "30d"}}btn--primary{{else}}btn--ghost{{end}}"
+       hx-get="/usage?period=30d" hx-target="#usage-section" hx-swap="outerHTML">30d</a>
+  </div>
+
+  <!-- Headline cards -->
+  <div class="usage-grid">
+    <div class="usage-card" title="Sum of input + output tokens over the active window">
+      <div class="usage-card__label">Tokens ({{.Period}})</div>
+      <div class="usage-card__value">{{tokenShort (add .Totals.PromptTokens .Totals.CompletionTokens)}}</div>
+      <div class="usage-card__sub">
+        {{tokenShort .Totals.PromptTokens}} in / {{tokenShort .Totals.CompletionTokens}} out
+      </div>
+    </div>
+    <div class="usage-card" title="LLM calls (including classifier, compaction, fallback retries)">
+      <div class="usage-card__label">Calls ({{.Period}})</div>
+      <div class="usage-card__value">{{intFmt .Totals.Calls}}</div>
+      <div class="usage-card__sub">
+        {{if gt .Totals.ErrorCount 0}}{{.Totals.ErrorCount}} errors{{else}}all ok{{end}}
+      </div>
+    </div>
+    <div class="usage-card" title="Authoritative USD reported by OpenRouter (usage.cost). Claude bridge reports total_cost_usd. Other providers don't report cost.">
+      <div class="usage-card__label">Cost ({{.Period}})</div>
+      <div class="usage-card__value">{{priceFmt .Totals.CostUSD}}</div>
+      <div class="usage-card__sub">
+        24h: {{priceFmt .TotalsToday.CostUSD}} · 7d: {{priceFmt .Totals7d.CostUSD}}
+      </div>
+    </div>
+    <div class="usage-card" title="Projected monthly spend = 7d cost × (30/7)">
+      <div class="usage-card__label">Forecast 30d</div>
+      <div class="usage-card__value">{{priceFmt .ForecastUSD}}</div>
+      <div class="usage-card__sub">from 7d trailing</div>
+    </div>
+    <div class="usage-card" title="Fraction of prompt tokens that hit the provider's cache (Anthropic / Gemini / OpenAI prompt caching)">
+      <div class="usage-card__label">Cache hit</div>
+      <div class="usage-card__value">{{printf "%.1f%%" .CacheHitPct}}</div>
+      <div class="usage-card__sub">
+        {{tokenShort .Totals.CachedPromptTokens}} cached
+      </div>
+    </div>
+    <div class="usage-card" title="Fraction of completion tokens that went into internal reasoning (thinking models). Billed as completion but hidden from the user.">
+      <div class="usage-card__label">Reasoning overhead</div>
+      <div class="usage-card__value">{{printf "%.1f%%" .ReasoningPct}}</div>
+      <div class="usage-card__sub">
+        {{tokenShort .Totals.ReasoningTokens}} reasoning
+      </div>
+    </div>
+  </div>
+
+  <!-- Daily chart (last 30 days regardless of period toggle) -->
+  {{if gt .DailyChart.Days 0}}
+  <div class="usage-chart-wrap">
+    <div class="usage-chart-title">
+      Daily calls & cost (30-day window) — bar height is relative to the 30-day max.
+      <span style="color:var(--text-secondary);">Calls peak {{.DailyChart.MaxCalls}}, cost peak {{priceFmt .DailyChart.MaxCost}}.</span>
+    </div>
+    <svg viewBox="0 0 {{.DailyChart.Width}} {{.DailyChart.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
+      <line x1="20" y1="{{sub .DailyChart.Height 20}}" x2="{{sub .DailyChart.Width 10}}" y2="{{sub .DailyChart.Height 20}}" stroke="#ccc" />
+      {{range .DailyChart.Bars}}
+        <rect x="{{.X}}" y="{{.CallsY}}" width="8" height="{{.CallsH}}" fill="#3b82f6">
+          <title>{{.DayLabel}}: {{.Calls}} calls, {{priceFmt .CostUSD}}</title>
+        </rect>
+        <rect x="{{add .X 9}}" y="{{.CostY}}" width="8" height="{{.CostH}}" fill="#10b981">
+          <title>{{.DayLabel}}: {{priceFmt .CostUSD}}, {{.Calls}} calls</title>
+        </rect>
+      {{end}}
+    </svg>
+    <div class="usage-chart-legend">
+      <span><span class="usage-chart-legend__swatch" style="background:#3b82f6;"></span> calls</span>
+      <span><span class="usage-chart-legend__swatch" style="background:#10b981;"></span> cost (USD)</span>
+    </div>
+  </div>
+  {{end}}
+
+  <!-- By model -->
+  <h3 class="usage-section-h">Top models — by cost ({{.Period}})</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th title="provider/model identifier">Model</th>
+        <th title="Total number of LLM calls">Calls</th>
+        <th title="Prompt (input) tokens">Prompt</th>
+        <th title="Completion (output) tokens">Completion</th>
+        <th title="Authoritative USD cost reported by provider">Cost</th>
+      </tr></thead>
+      <tbody>
+        {{range .ByModel}}
+        <tr>
+          <td><code>{{.Provider}}/{{.ModelID}}</code></td>
+          <td class="price-cell">{{intFmt .Calls}}</td>
+          <td class="price-cell">{{tokenShort .PromptTokens}}</td>
+          <td class="price-cell">{{tokenShort .CompletionTokens}}</td>
+          <td class="price-cell">{{priceFmt .CostUSD}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- By role -->
+  <h3 class="usage-section-h">By role ({{.Period}})</h3>
+  <div class="table-wrap" style="max-width:640px;">
+    <table>
+      <thead><tr><th>Role</th><th>Calls</th><th>Cost</th></tr></thead>
+      <tbody>
+        {{range .ByRole}}
+        <tr>
+          <td><code>{{.Role}}</code></td>
+          <td class="price-cell">{{intFmt .Calls}}</td>
+          <td class="price-cell">{{priceFmt .CostUSD}}</td>
+        </tr>
+        {{else}}
+        <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Expensive turns -->
+  <h3 class="usage-section-h" title="Most expensive turns in the active window. Question/answer pairs are pulled from the messages table via user_message_id / assistant_message_id FKs.">Expensive turns ({{.Period}}) — top 10</h3>
+  <div class="table-wrap">
+    <table class="usage-turns">
+      <thead><tr>
+        <th>When</th>
+        <th>Role / Model</th>
+        <th>Cost</th>
+        <th>Question → Answer</th>
+      </tr></thead>
+      <tbody>
+        {{range .ExpensiveTurns}}
+        <tr>
+          <td style="white-space:nowrap;">{{.Ts}}</td>
+          <td style="white-space:nowrap;"><code>{{.Role}}</code><br><small>{{.ModelID}}</small></td>
+          <td class="price-cell">{{priceFmt .CostUSD}}<br><small>{{tokenShort .Tokens}}t</small></td>
+          <td>
+            {{if .Question}}<div class="usage-turn__q"><strong>Q:</strong> {{.Question}}</div>{{end}}
+            {{if .Answer}}<div class="usage-turn__a"><strong>A:</strong> {{.Answer}}</div>{{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr><td colspan="4" style="text-align:center;color:var(--text-secondary);">No expensive turns yet.</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

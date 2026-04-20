@@ -742,6 +742,125 @@ func (s *SQLite) UpdateAssistantMessageID(ctx context.Context, usageID, msgID in
 	return nil
 }
 
+func (s *SQLite) UsageTotals(ctx context.Context, since time.Time) (llm.UsageTotals, error) {
+	var t llm.UsageTotals
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(COUNT(*), 0),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0),
+		       COALESCE(SUM(cached_prompt_tokens), 0),
+		       COALESCE(SUM(reasoning_tokens), 0),
+		       COALESCE(SUM(cost_usd), 0),
+		       COALESCE(SUM(CASE WHEN success THEN 0 ELSE 1 END), 0)
+		FROM usage_log WHERE ts >= ?`, since).
+		Scan(&t.Calls, &t.PromptTokens, &t.CompletionTokens, &t.CachedPromptTokens,
+			&t.ReasoningTokens, &t.CostUSD, &t.ErrorCount)
+	if err != nil {
+		return llm.UsageTotals{}, fmt.Errorf("usage totals: %w", err)
+	}
+	return t, nil
+}
+
+func (s *SQLite) UsageByDay(ctx context.Context, since time.Time) ([]llm.UsageDayBucket, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT date(ts) AS day,
+		       COUNT(*),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0),
+		       COALESCE(SUM(cost_usd), 0)
+		FROM usage_log WHERE ts >= ?
+		GROUP BY day ORDER BY day`, since)
+	if err != nil {
+		return nil, fmt.Errorf("usage by day: %w", err)
+	}
+	defer rows.Close()
+	var out []llm.UsageDayBucket
+	for rows.Next() {
+		var dayStr string
+		var b llm.UsageDayBucket
+		if err := rows.Scan(&dayStr, &b.Calls, &b.PromptTokens, &b.CompletionTokens, &b.CostUSD); err != nil {
+			return nil, err
+		}
+		b.Day, _ = time.Parse("2006-01-02", dayStr)
+		out = append(out, b)
+	}
+	return out, nil
+}
+
+func (s *SQLite) UsageByModel(ctx context.Context, since time.Time, limit int) ([]llm.UsageModelRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT provider, model_id,
+		       COUNT(*),
+		       COALESCE(SUM(prompt_tokens), 0),
+		       COALESCE(SUM(completion_tokens), 0),
+		       COALESCE(SUM(cost_usd), 0) AS cost
+		FROM usage_log WHERE ts >= ?
+		GROUP BY provider, model_id
+		ORDER BY cost DESC, 3 DESC
+		LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("usage by model: %w", err)
+	}
+	defer rows.Close()
+	var out []llm.UsageModelRow
+	for rows.Next() {
+		var r llm.UsageModelRow
+		if err := rows.Scan(&r.Provider, &r.ModelID, &r.Calls, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *SQLite) UsageByRole(ctx context.Context, since time.Time) ([]llm.UsageRoleRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT role, COUNT(*), COALESCE(SUM(cost_usd), 0)
+		FROM usage_log WHERE ts >= ?
+		GROUP BY role ORDER BY COUNT(*) DESC`, since)
+	if err != nil {
+		return nil, fmt.Errorf("usage by role: %w", err)
+	}
+	defer rows.Close()
+	var out []llm.UsageRoleRow
+	for rows.Next() {
+		var r llm.UsageRoleRow
+		if err := rows.Scan(&r.Role, &r.Calls, &r.CostUSD); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *SQLite) ExpensiveTurns(ctx context.Context, since time.Time, limit int) ([]llm.ExpensiveTurn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT u.ts, u.chat_id, u.role, u.model_id, u.cost_usd,
+		       (u.prompt_tokens + u.completion_tokens) AS tokens,
+		       COALESCE(mq.content, ''), COALESCE(ma.content, '')
+		FROM usage_log u
+		LEFT JOIN messages mq ON mq.id = u.user_message_id
+		LEFT JOIN messages ma ON ma.id = u.assistant_message_id
+		WHERE u.ts >= ? AND u.cost_usd > 0
+		ORDER BY u.cost_usd DESC
+		LIMIT ?`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("expensive turns: %w", err)
+	}
+	defer rows.Close()
+	var out []llm.ExpensiveTurn
+	for rows.Next() {
+		var t llm.ExpensiveTurn
+		var tsStr string
+		if err := rows.Scan(&tsStr, &t.ChatID, &t.Role, &t.ModelID, &t.CostUSD, &t.Tokens, &t.Question, &t.Answer); err != nil {
+			return nil, err
+		}
+		t.Ts, _ = time.Parse("2006-01-02 15:04:05", tsStr)
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 func nullableInt64(p *int64) any {
 	if p == nil {
 		return nil
