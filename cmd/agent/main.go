@@ -63,6 +63,9 @@ func main() {
 		if name == "embedding" {
 			continue
 		}
+		// Fill in well-known defaults (base URLs etc.) so config entries can
+		// omit them. See llm.ApplyProviderDefaults for the policy.
+		mc = llm.ApplyProviderDefaults(mc)
 		switch mc.Provider {
 		case "openrouter":
 			if mc.APIKey == "" || mc.Model == "" {
@@ -83,7 +86,9 @@ func main() {
 			p, e := llm.NewOllama(mc)
 			addProvider(name, p, e)
 		case "claude-bridge":
-			if mc.BaseURL == "" {
+			// base_url now has a default (host.docker.internal:9900); api_key
+			// (bridge token) is still mandatory.
+			if mc.APIKey == "" {
 				continue
 			}
 			p, e := llm.NewClaudeBridge(mc)

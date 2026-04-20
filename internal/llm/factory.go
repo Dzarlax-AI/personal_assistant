@@ -30,6 +30,7 @@ func BuildBackendFactories(cfg *config.Config) map[string]BackendFactory {
 		if seen[mc.Provider] {
 			continue
 		}
+		mc = ApplyProviderDefaults(mc)
 		switch mc.Provider {
 		case "openrouter":
 			base := mc
