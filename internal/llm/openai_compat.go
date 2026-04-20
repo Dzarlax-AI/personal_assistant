@@ -140,6 +140,7 @@ type rawChatRequest struct {
 
 // rawStreamDelta is an SSE chunk from an OpenAI-compatible streaming response.
 type rawStreamDelta struct {
+	ID      string `json:"id"`
 	Choices []struct {
 		Delta struct {
 			Content   string        `json:"content"`
@@ -147,6 +148,7 @@ type rawStreamDelta struct {
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *rawUsage `json:"usage"` // last chunk (usually after finish_reason) carries this when usage.include=true
 }
 
 // rawMessage uses `any` for Content so we can serialize null, string, or array.
@@ -455,8 +457,14 @@ func (p *openAICompatProvider) readSSE(resp *http.Response, ch chan<- StreamChun
 
 	// Accumulate tool calls across deltas (they arrive in fragments).
 	var toolCallsByIdx = make(map[int]*rawToolCall)
+	var usage Usage
+	var haveUsage bool
 
 	scanner := bufio.NewScanner(resp.Body)
+	// Stream responses can include large payloads (reasoning traces, long tool
+	// arguments). Default Scanner buffer is 64KB; bump to 1MB so we don't miss
+	// the final usage chunk on long responses.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -471,6 +479,24 @@ func (p *openAICompatProvider) readSSE(resp *http.Response, ch chan<- StreamChun
 		if err := json.Unmarshal([]byte(data), &delta); err != nil {
 			continue
 		}
+
+		// Usage block: OpenRouter sends a terminal chunk with choices=[] and
+		// a populated usage object when usage.include=true.
+		if delta.Usage != nil {
+			usage.PromptTokens = delta.Usage.PromptTokens
+			usage.CompletionTokens = delta.Usage.CompletionTokens
+			if delta.Usage.PromptTokensDetails != nil {
+				usage.CachedPromptTokens = delta.Usage.PromptTokensDetails.CachedTokens
+			}
+			if delta.Usage.CompletionTokensDetails != nil {
+				usage.ReasoningTokens = delta.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			haveUsage = true
+		}
+		if delta.ID != "" && usage.RequestID == "" {
+			usage.RequestID = delta.ID
+		}
+
 		if len(delta.Choices) == 0 {
 			continue
 		}
@@ -516,6 +542,9 @@ func (p *openAICompatProvider) readSSE(resp *http.Response, ch chan<- StreamChun
 				Arguments: tc.Function.Arguments,
 			})
 		}
+	}
+	if haveUsage {
+		final.Usage = usage
 	}
 	if err := scanner.Err(); err != nil {
 		final.Err = err

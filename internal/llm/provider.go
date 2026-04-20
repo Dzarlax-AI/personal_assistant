@@ -68,6 +68,7 @@ type StreamChunk struct {
 	ToolCalls []ToolCall // populated only in the final Done chunk if the LLM returned tool calls
 	Done      bool       // true when the stream is finished
 	Err       error      // non-nil if the stream encountered an error
+	Usage     Usage      // populated on the final Done chunk when the provider reports token counts
 }
 
 // StreamProvider is an optional interface for providers that support streaming.

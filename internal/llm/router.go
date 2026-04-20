@@ -436,30 +436,64 @@ func splitProviderName(name string) (provider, model string) {
 // Falls back to wrapping a synchronous Chat() in a single-chunk channel.
 func (r *Router) ChatStream(ctx context.Context, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
 	provider := r.pick(ctx, messages)
+	primaryKey := r.keyFor(provider)
 	r.mu.Lock()
 	r.lastRouted = provider.Name()
-	r.lastRoutedKey = r.keyFor(provider)
+	r.lastRoutedKey = primaryKey
 	r.mu.Unlock()
 	if sp, ok := provider.(StreamProvider); ok {
 		ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
-		if err != nil && isUnavailable(err) {
-			// Try fallback providers synchronously.
-			return r.syncFallbackStream(ctx, provider, messages, systemPrompt, tools, err)
+		if err != nil {
+			// Even a start-of-stream failure deserves a usage record with
+			// error_class set so dashboards see it.
+			r.recordUsage(ctx, provider, primaryKey, Response{}, err, 0)
+			if isUnavailable(err) {
+				return r.syncFallbackStream(ctx, provider, messages, systemPrompt, tools, err)
+			}
+			return nil, err
 		}
-		return ch, err
+		return r.instrumentedStream(ctx, provider, primaryKey, ch), nil
 	}
 	// Provider does not stream — wrap synchronous call.
 	return r.syncStream(ctx, provider, messages, systemPrompt, tools)
 }
 
-// syncStream wraps a synchronous Chat() call in a channel.
+// instrumentedStream tees the provider's stream to the caller and records a
+// UsageLog entry when the terminal chunk arrives. Usage data comes from the
+// provider (openai_compat parses it out of the SSE payload); when absent the
+// record still lands with zero tokens so dashboards show the call happened.
+func (r *Router) instrumentedStream(ctx context.Context, provider Provider, role string, upstream <-chan StreamChunk) <-chan StreamChunk {
+	out := make(chan StreamChunk, 64)
+	start := time.Now()
+	go func() {
+		defer close(out)
+		var finalResp Response
+		var finalErr error
+		for chunk := range upstream {
+			out <- chunk
+			if chunk.Done {
+				finalResp = Response{ToolCalls: chunk.ToolCalls, Usage: chunk.Usage}
+				finalErr = chunk.Err
+			}
+		}
+		r.recordUsage(ctx, provider, role, finalResp, finalErr, time.Since(start))
+	}()
+	return out
+}
+
+// syncStream wraps a synchronous Chat() call in a channel. Usage is recorded
+// via the same path as Router.Chat so streaming callers that hit non-stream
+// providers still produce UsageLog rows.
 func (r *Router) syncStream(ctx context.Context, provider Provider, messages []Message, systemPrompt string, tools []Tool) (<-chan StreamChunk, error) {
+	role := r.keyFor(provider)
+	start := time.Now()
 	resp, err := provider.Chat(ctx, messages, systemPrompt, tools)
+	r.recordUsage(ctx, provider, role, resp, err, time.Since(start))
 	if err != nil {
 		return nil, err
 	}
 	ch := make(chan StreamChunk, 1)
-	ch <- StreamChunk{Delta: resp.Content, ToolCalls: resp.ToolCalls, Done: true}
+	ch <- StreamChunk{Delta: resp.Content, ToolCalls: resp.ToolCalls, Done: true, Usage: resp.Usage}
 	close(ch)
 	return ch, nil
 }
@@ -479,12 +513,13 @@ func (r *Router) syncFallbackStream(ctx context.Context, failed Provider, messag
 		if r.OnFallback != nil {
 			r.OnFallback(failed.Name(), next.Name())
 		}
-		// Try streaming on fallback if supported.
+		// Try streaming on fallback if supported — still instrumented.
 		if sp, ok := next.(StreamProvider); ok {
 			ch, err := sp.ChatStream(ctx, messages, systemPrompt, tools)
 			if err == nil {
-				return ch, nil
+				return r.instrumentedStream(ctx, next, "fallback", ch), nil
 			}
+			r.recordUsage(ctx, next, "fallback", Response{}, err, 0)
 		}
 		// Otherwise sync.
 		return r.syncStream(ctx, next, messages, systemPrompt, tools)
