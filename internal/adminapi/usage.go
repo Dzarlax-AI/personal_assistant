@@ -44,24 +44,39 @@ type expensiveTurnView struct {
 
 // dailyChart is a pre-sized SVG description rendered in the template — keeps
 // the template free of math and the HTML free of JS dependencies.
+//
+// Layout: calls are rendered as solid vertical bars (primary axis, left).
+// Cost is a line + point overlay on a secondary axis (right). Two visually
+// distinct elements — you can tell at a glance whether a day was "lots of
+// cheap calls" or "few expensive calls".
 type dailyChart struct {
-	Width    int
-	Height   int
-	Bars     []dailyBar
-	MaxCalls int
-	MaxCost  float64
-	Days     int
+	Width     int
+	Height    int
+	PlotTop   int // y coordinate of the top of the plotting area
+	PlotBot   int // y coordinate of the axis line
+	Bars      []dailyBar
+	CostPath  string // SVG path data "M x y L x y L ..." for the cost line
+	CostDots  []dailyBar // reuses bar fields for dot positions (X + CostY)
+	MaxCalls  int
+	MaxCost   float64
+	Days      int
+	XAxisTags []xAxisTag // sparse labels at first/middle/last day
 }
 
 type dailyBar struct {
-	X         int
-	CallsY    int
-	CallsH    int
-	CostY     int
-	CostH     int
-	DayLabel  string // short label for x-axis, e.g. "04-20"
-	Calls     int
-	CostUSD   float64
+	X        int
+	W        int
+	CallsY   int
+	CallsH   int
+	CostY    int
+	DayLabel string
+	Calls    int
+	CostUSD  float64
+}
+
+type xAxisTag struct {
+	X     int
+	Label string
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
@@ -176,14 +191,31 @@ func resolvePeriod(period string) (time.Time, string) {
 	}
 }
 
-// buildDailyChart turns a slice of UsageDayBucket into SVG coordinates. The
-// chart is a fixed 600×160 box with two bars per day (calls + cost, grouped).
+// buildDailyChart turns a slice of UsageDayBucket into SVG coordinates. Calls
+// are bars; cost is an overlaid line with markers. Size is fixed 480×120;
+// bar width is adaptive so sparse data (1-3 days) still looks like a chart
+// and not one lonely pixel-wide sliver.
 func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
-	c := dailyChart{Width: 720, Height: 160, Days: len(buckets)}
+	const (
+		width     = 480
+		height    = 120
+		padLeft   = 12
+		padRight  = 12
+		padTop    = 10
+		padBottom = 22
+	)
+	c := dailyChart{
+		Width:   width,
+		Height:  height,
+		PlotTop: padTop,
+		PlotBot: height - padBottom,
+		Days:    len(buckets),
+	}
 	if len(buckets) == 0 {
 		return c
 	}
-	// Normalize — find max for each axis.
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Day.Before(buckets[j].Day) })
+
 	for _, b := range buckets {
 		if b.Calls > c.MaxCalls {
 			c.MaxCalls = b.Calls
@@ -198,24 +230,64 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 	if c.MaxCost == 0 {
 		c.MaxCost = 0.0001
 	}
-	// Layout: barWidth pair per day, 20px of padding total. For 30-day view we
-	// want ~10px per day comfortably.
-	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Day.Before(buckets[j].Day) })
-	dayWidth := (c.Width - 40) / max(len(buckets), 1)
+
+	plotW := width - padLeft - padRight
+	plotH := c.PlotBot - c.PlotTop
+	slot := float64(plotW) / float64(len(buckets))
+	// Bars are up to 60% of a slot, capped at 28px to look sensible for
+	// sparse data without becoming huge.
+	barW := int(slot * 0.6)
+	if barW < 2 {
+		barW = 2
+	}
+	if barW > 28 {
+		barW = 28
+	}
+
+	var pathBuilder strings.Builder
 	for i, b := range buckets {
-		x := 20 + i*dayWidth
-		callsH := int(float64(b.Calls) / float64(c.MaxCalls) * 140)
-		costH := int(b.CostUSD / c.MaxCost * 140)
-		c.Bars = append(c.Bars, dailyBar{
-			X:        x,
-			CallsY:   c.Height - 20 - callsH,
+		slotCenter := padLeft + int((float64(i)+0.5)*slot)
+		barX := slotCenter - barW/2
+
+		callsH := int(float64(b.Calls) / float64(c.MaxCalls) * float64(plotH))
+		if callsH < 0 {
+			callsH = 0
+		}
+		costY := c.PlotBot - int(b.CostUSD/c.MaxCost*float64(plotH))
+
+		bar := dailyBar{
+			X:        barX,
+			W:        barW,
+			CallsY:   c.PlotBot - callsH,
 			CallsH:   callsH,
-			CostY:    c.Height - 20 - costH,
-			CostH:    costH,
+			CostY:    costY,
 			DayLabel: b.Day.Format("01-02"),
 			Calls:    b.Calls,
 			CostUSD:  b.CostUSD,
-		})
+		}
+		c.Bars = append(c.Bars, bar)
+		c.CostDots = append(c.CostDots, dailyBar{X: slotCenter, CostY: costY, DayLabel: bar.DayLabel, Calls: bar.Calls, CostUSD: bar.CostUSD})
+
+		if i == 0 {
+			fmt.Fprintf(&pathBuilder, "M %d %d", slotCenter, costY)
+		} else {
+			fmt.Fprintf(&pathBuilder, " L %d %d", slotCenter, costY)
+		}
+	}
+	c.CostPath = pathBuilder.String()
+
+	// X-axis labels: first, middle, last — keeps the axis readable on both
+	// 1-day and 30-day views without collisions.
+	addTag := func(i int) {
+		slotCenter := padLeft + int((float64(i)+0.5)*slot)
+		c.XAxisTags = append(c.XAxisTags, xAxisTag{X: slotCenter, Label: buckets[i].Day.Format("01-02")})
+	}
+	addTag(0)
+	if len(buckets) >= 3 {
+		addTag(len(buckets) / 2)
+	}
+	if len(buckets) > 1 {
+		addTag(len(buckets) - 1)
 	}
 	return c
 }
