@@ -411,7 +411,7 @@ func (a *Agent) executeToolCalls(ctx context.Context, chatID int64, toolCalls []
 				result = fmt.Sprintf("Error: %s", err.Error())
 			}
 			if len(result) > toolResultSummarizeThreshold {
-				if summarized, sErr := a.summarizeToolResult(ctx, tc.Name, result); sErr == nil {
+				if summarized, sErr := a.summarizeToolResult(ctx, tc.Name, result); sErr == nil && summarized != "" {
 					a.logger.Info("tool result summarized", "tool", tc.Name, "original_len", len(result), "summary_len", len(summarized))
 					result = summarized
 				}
@@ -557,7 +557,19 @@ func (a *Agent) summarizeToolResult(ctx context.Context, toolName, result string
 		Role:    "user",
 		Content: fmt.Sprintf("Tool '%s' returned:\n\n%s", toolName, result),
 	}}
-	resp, err := a.router.Chat(ctx, msgs, toolSummarizePrompt, nil)
+	// Use compaction provider directly to avoid classifier routing this to `simple`.
+	cfg := a.router.GetConfig()
+	key := cfg.Compaction
+	if key == "" {
+		key = cfg.Default
+	}
+	p, ok := a.router.Provider(key)
+	if !ok {
+		return "", fmt.Errorf("summarize provider unavailable")
+	}
+	start := time.Now()
+	resp, err := p.Chat(ctx, msgs, toolSummarizePrompt, nil)
+	a.router.RecordCall(ctx, p, "tool-summarize", resp, err, time.Since(start))
 	if err != nil {
 		return "", err
 	}
