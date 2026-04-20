@@ -49,6 +49,16 @@ func NewClaudeBridge(cfg config.ModelConfig) (*claudeBridgeProvider, error) {
 
 func (p *claudeBridgeProvider) Name() string { return "claude-bridge" }
 
+// SetModel is a no-op for claude-bridge — the underlying `claude -p` CLI
+// picks its own model based on the user's Anthropic subscription. Implemented
+// only so this provider satisfies ConfigurableProvider and the router's
+// same-type-swap path doesn't error when the admin UI replays a persisted
+// (provider=claude-bridge, model="") state on startup.
+func (p *claudeBridgeProvider) SetModel(_ string, _ Capabilities) {}
+
+// CurrentModel returns an empty string — the bridge does not track a model id.
+func (p *claudeBridgeProvider) CurrentModel() string { return "" }
+
 // ResetSession clears the stored session ID so the next call starts a fresh Claude session.
 func (p *claudeBridgeProvider) ResetSession() {
 	p.mu.Lock()
