@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
 )
 
@@ -659,6 +661,225 @@ func (s *Server) firstGeminiAPIKey() string {
 		}
 	}
 	return ""
+}
+
+// --- MCP page ---
+
+type uiMCPRow struct {
+	Name       string
+	URL        string
+	Headers    string // JSON-serialised, one per line, for display/edit in a textarea
+	AllowTools string // comma-separated
+	DenyTools  string // comma-separated
+	Type       string
+}
+
+type uiMCPData struct {
+	ActiveTab    string
+	Servers      []uiMCPRow
+	BridgeExport string // MCP_BRIDGE_EXPORT_PATH if set, shown as a banner note
+	SavedName    string // non-empty after a successful save — used by template to flash a success message
+}
+
+// loadMCPForUI returns the current MCP list flattened into UI rows. Prefers
+// the DB list; falls back to the legacy mcp.json file so users landing on
+// the page for the first time see their existing config instead of an
+// empty table.
+func (s *Server) loadMCPForUI(ctx context.Context) map[string]config.MCPServerConfig {
+	if servers, found, _ := LoadMCPServersFromSettings(ctx, s.settings); found {
+		return servers
+	}
+	// File fallback — best effort.
+	if servers, err := config.LoadMCPServers("config/mcp.json"); err == nil {
+		return servers
+	}
+	return nil
+}
+
+func mcpToRows(servers map[string]config.MCPServerConfig) []uiMCPRow {
+	names := sortedMCPServerNames(servers)
+	out := make([]uiMCPRow, 0, len(names))
+	for _, n := range names {
+		sv := servers[n]
+		hdrLines := make([]string, 0, len(sv.Headers))
+		hdrKeys := make([]string, 0, len(sv.Headers))
+		for k := range sv.Headers {
+			hdrKeys = append(hdrKeys, k)
+		}
+		sort.Strings(hdrKeys)
+		for _, k := range hdrKeys {
+			hdrLines = append(hdrLines, k+": "+sv.Headers[k])
+		}
+		out = append(out, uiMCPRow{
+			Name:       n,
+			URL:        sv.URL,
+			Type:       sv.Type,
+			Headers:    strings.Join(hdrLines, "\n"),
+			AllowTools: strings.Join(sv.AllowTools, ","),
+			DenyTools:  strings.Join(sv.DenyTools, ","),
+		})
+	}
+	return out
+}
+
+func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	data := uiMCPData{
+		ActiveTab:    "mcp",
+		Servers:      mcpToRows(s.loadMCPForUI(ctx)),
+		BridgeExport: os.Getenv("MCP_BRIDGE_EXPORT_PATH"),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewMCP, data); err != nil {
+		s.logger.Error("render mcp", "err", err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+// parseHeadersText splits "Key: value" lines into a map. Blank lines are
+// ignored; malformed lines are silently dropped so a UI save with partial
+// typing doesn't wipe the entry.
+func parseHeadersText(text string) map[string]string {
+	out := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// splitCSV turns "a,b, c" into ["a","b","c"], trimming and dropping blanks.
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// handleMCPSet: POST /mcp/{name}/set with body url, headers, allow_tools,
+// deny_tools, type. Upserts the named server in the DB-backed list. Writes
+// the bridge mirror file on success.
+func (s *Server) handleMCPSet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/mcp/"), "/set")
+	name = strings.TrimSpace(name)
+	if name == "" || strings.ContainsAny(name, "/ \t\n") {
+		http.Error(w, "invalid server name", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	current := s.loadMCPForUI(ctx)
+	if current == nil {
+		current = map[string]config.MCPServerConfig{}
+	}
+	url := strings.TrimSpace(r.FormValue("url"))
+	if url == "" {
+		http.Error(w, "url required", http.StatusBadRequest)
+		return
+	}
+	current[name] = config.MCPServerConfig{
+		Type:       strings.TrimSpace(r.FormValue("type")),
+		URL:        url,
+		Headers:    parseHeadersText(r.FormValue("headers")),
+		AllowTools: splitCSV(r.FormValue("allow_tools")),
+		DenyTools:  splitCSV(r.FormValue("deny_tools")),
+	}
+	if err := saveMCPServers(ctx, s.settings, current); err != nil {
+		s.logger.Warn("mcp save failed", "name", name, "err", err)
+		http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Info("mcp server updated", "name", name, "url", url)
+	// Re-render the page so the new row shows up.
+	data := uiMCPData{
+		ActiveTab:    "mcp",
+		Servers:      mcpToRows(current),
+		BridgeExport: os.Getenv("MCP_BRIDGE_EXPORT_PATH"),
+		SavedName:    name,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewMCP, data); err != nil {
+		s.logger.Error("render mcp after save", "err", err)
+	}
+}
+
+// handleMCPDelete: POST /mcp/{name}/delete. Removes the named server.
+func (s *Server) handleMCPDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/mcp/"), "/delete")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	current := s.loadMCPForUI(ctx)
+	if _, ok := current[name]; !ok {
+		http.Error(w, "unknown server: "+name, http.StatusNotFound)
+		return
+	}
+	delete(current, name)
+	if err := saveMCPServers(ctx, s.settings, current); err != nil {
+		s.logger.Warn("mcp delete failed", "name", name, "err", err)
+		http.Error(w, "save failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logger.Info("mcp server deleted", "name", name)
+	data := uiMCPData{
+		ActiveTab:    "mcp",
+		Servers:      mcpToRows(current),
+		BridgeExport: os.Getenv("MCP_BRIDGE_EXPORT_PATH"),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = render(w, viewMCP, data)
 }
 
 // --- Settings page ---

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"telegram-agent/internal/config"
@@ -117,4 +118,21 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/prompts/", authed(http.HandlerFunc(s.handlePromptSet))) // POST /prompts/{key}/set
 	mux.Handle("/settings", authed(http.HandlerFunc(s.handleSettings)))
 	mux.Handle("/settings/", authed(http.HandlerFunc(s.handleSettingSet))) // POST /settings/{key}/set
+	mux.Handle("/mcp", authed(http.HandlerFunc(s.handleMCP)))
+	mux.Handle("/mcp/", authed(http.HandlerFunc(s.handleMCPRouter))) // dispatches {name}/set | {name}/delete
+}
+
+// handleMCPRouter dispatches /mcp/{name}/set and /mcp/{name}/delete to the
+// specific handlers. Done in one handler so registerRoutes keeps one entry
+// per tab in the admin.
+func (s *Server) handleMCPRouter(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	switch {
+	case strings.HasSuffix(path, "/set"):
+		s.handleMCPSet(w, r)
+	case strings.HasSuffix(path, "/delete"):
+		s.handleMCPDelete(w, r)
+	default:
+		http.NotFound(w, r)
+	}
 }

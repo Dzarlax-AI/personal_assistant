@@ -1,0 +1,93 @@
+{{define "mcp"}}
+<!doctype html>
+<html>
+<head>{{template "admin_head" .}}<title>MCP — Admin</title>
+<style>
+  .mcp-grid { display: grid; gap: 1rem; }
+  .mcp-card { border: 1px solid rgba(0,0,0,0.08); border-radius: var(--radius, 8px); padding: 1rem; background: var(--surface-1, #fff); }
+  .mcp-card__header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+  .mcp-card__name { font-family: var(--font-mono, monospace); font-weight: 600; font-size: 1.05em; }
+  .mcp-field { display: grid; grid-template-columns: 9rem 1fr; gap: 0.5rem; align-items: start; margin-bottom: 0.5rem; }
+  .mcp-field label { color: var(--text-secondary, rgba(0,0,0,0.6)); font-size: 0.85em; padding-top: 0.35rem; }
+  .mcp-field textarea { width: 100%; min-height: 3.5rem; font-family: var(--font-mono, monospace); font-size: 0.85em; }
+  .mcp-field input { width: 100%; }
+  .mcp-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+  .mcp-bridge-note { background: #fff3e0; color: #92400e; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9em; }
+  .mcp-flash-ok { background: #dcfce7; color: #15803d; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>Admin</h1>
+{{template "admin_tabs" .}}
+
+{{if .SavedName}}
+<div class="mcp-flash-ok">Saved <code>{{.SavedName}}</code>.</div>
+{{end}}
+
+{{if .BridgeExport}}
+<div class="mcp-bridge-note">
+  <strong>Bridge mirror active.</strong> Every save also writes to
+  <code>{{.BridgeExport}}</code> for claude-bridge consumption.
+</div>
+{{else}}
+<div class="mcp-bridge-note" style="background:#f3f4f6;color:#374151;">
+  <strong>Bridge mirror OFF.</strong> Set <code>MCP_BRIDGE_EXPORT_PATH</code>
+  env var to mirror changes to a shared file for claude-bridge.
+</div>
+{{end}}
+
+<p style="color:var(--text-secondary);margin-bottom:1rem;font-size:0.9em;">
+  MCP servers live in the DB (<code>cfg.mcp.servers</code>). Legacy <code>config/mcp.json</code>
+  is read only when the DB is empty. Headers format: one <code>Key: value</code> per line.
+  Allow/deny lists: comma-separated tool names.
+</p>
+
+<div class="mcp-grid">
+{{range .Servers}}
+<div class="mcp-card">
+  <div class="mcp-card__header">
+    <div class="mcp-card__name">{{.Name}}</div>
+    <form hx-post="/mcp/{{.Name}}/delete"
+          hx-confirm="Delete MCP server {{.Name}}?"
+          hx-target="body" hx-swap="outerHTML" style="display:inline;">
+      <button class="btn btn--small btn--ghost" type="submit" style="color:#dc2626;">Delete</button>
+    </form>
+  </div>
+  <form hx-post="/mcp/{{.Name}}/set" hx-target="body" hx-swap="outerHTML">
+    <div class="mcp-field"><label>URL</label><input class="form-input" name="url" type="url" value="{{.URL}}" required></div>
+    <div class="mcp-field"><label>Type</label><input class="form-input" name="type" type="text" value="{{.Type}}" placeholder="(optional, e.g. http)"></div>
+    <div class="mcp-field"><label>Headers</label><textarea class="form-input" name="headers" placeholder="Authorization: Bearer xyz&#10;X-Custom: value">{{.Headers}}</textarea></div>
+    <div class="mcp-field"><label>Allow tools</label><input class="form-input" name="allow_tools" type="text" value="{{.AllowTools}}" placeholder="(empty = all)"></div>
+    <div class="mcp-field"><label>Deny tools</label><input class="form-input" name="deny_tools" type="text" value="{{.DenyTools}}" placeholder="(empty = none)"></div>
+    <div class="mcp-actions">
+      <button class="btn btn--small btn--primary" type="submit">Save</button>
+    </div>
+  </form>
+</div>
+{{else}}
+<div class="mcp-card" style="text-align:center;color:var(--text-secondary);">
+  No MCP servers configured yet. Add one below.
+</div>
+{{end}}
+</div>
+
+<hr style="margin:2rem 0;">
+
+<div class="mcp-card">
+  <div class="mcp-card__header"><div class="mcp-card__name">Add new server</div></div>
+  <form hx-post="/mcp/__new__/set" hx-target="body" hx-swap="outerHTML"
+        onsubmit="this.setAttribute('hx-post','/mcp/'+this.server_name.value+'/set');htmx.process(this);">
+    <div class="mcp-field"><label>Name</label><input class="form-input" name="server_name" type="text" required pattern="[a-zA-Z0-9_.-]+"></div>
+    <div class="mcp-field"><label>URL</label><input class="form-input" name="url" type="url" required></div>
+    <div class="mcp-field"><label>Type</label><input class="form-input" name="type" type="text" placeholder="(optional)"></div>
+    <div class="mcp-field"><label>Headers</label><textarea class="form-input" name="headers" placeholder="Authorization: Bearer xyz"></textarea></div>
+    <div class="mcp-field"><label>Allow tools</label><input class="form-input" name="allow_tools" type="text" placeholder="(comma-separated; empty = all)"></div>
+    <div class="mcp-field"><label>Deny tools</label><input class="form-input" name="deny_tools" type="text" placeholder="(comma-separated)"></div>
+    <div class="mcp-actions">
+      <button class="btn btn--small btn--primary" type="submit">Add</button>
+    </div>
+  </form>
+</div>
+</body>
+</html>
+{{end}}

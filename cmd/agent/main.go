@@ -224,12 +224,32 @@ func main() {
 	// runtime role changes (admin UI) take effect without a restart.
 	compacter := agent.NewCompacter(router)
 
-	// Init MCP client
+	// Init MCP client. DB (kv_settings) wins over the legacy mcp.json file —
+	// the admin UI writes there, so any user-edited list is authoritative.
 	var mcpClient *mcp.Client
-	mcpServers, err := config.LoadMCPServers("config/mcp.json")
-	if err != nil {
-		logger.Warn("failed to load mcp.json", "err", err)
+	var mcpServers map[string]config.MCPServerConfig
+	var mcpSource string
+	if ss, ok := s.(llm.SettingsStore); ok {
+		mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if dbServers, found, dbErr := adminapi.LoadMCPServersFromSettings(mcpCtx, ss); dbErr != nil {
+			logger.Warn("failed to load MCP servers from DB; falling back to file", "err", dbErr)
+		} else if found {
+			mcpServers = dbServers
+			mcpSource = "db"
+		}
+		mcpCancel()
 	}
+	if mcpServers == nil {
+		fileServers, err := config.LoadMCPServers("config/mcp.json")
+		if err != nil {
+			logger.Warn("failed to load mcp.json", "err", err)
+		}
+		mcpServers = fileServers
+		if fileServers != nil {
+			mcpSource = "file"
+		}
+	}
+	logger.Info("MCP config loaded", "servers", len(mcpServers), "source", mcpSource)
 	if len(mcpServers) > 0 {
 		mcpClient = mcp.NewClient(mcpServers, logger)
 		initCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
