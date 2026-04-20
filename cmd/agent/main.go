@@ -237,12 +237,10 @@ func main() {
 		cancel()
 
 		// top_k: DB override wins over config; disables filtering if 0.
-		topK := cfg.ToolFilter.TopK
-		if settingsStore, ok := s.(llm.SettingsStore); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			topK = llm.GetIntSetting(ctx, settingsStore, llm.SettingKeyToolFilterTopK, topK)
-			cancel()
-		}
+		topCtx, topCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ss, _ := s.(llm.SettingsStore)
+		topK := llm.GetIntSetting(topCtx, ss, llm.SettingKeyToolFilterTopK, cfg.ToolFilter.TopK)
+		topCancel()
 		if emb, ok := cfg.Models["embedding"]; ok && topK > 0 && (emb.APIKey != "" || emb.BaseURL != "") {
 			mcpClient.EnableEmbeddings(emb, topK)
 			embedCtx, embedCancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -264,25 +262,33 @@ func main() {
 		logger.Info("voice transcription enabled", "model", mm.Model)
 	}
 
-	if cfg.WebSearch.Enabled {
-		provider := cfg.WebSearch.Provider
-		if provider == "" {
-			provider = "ollama"
+	// Feature flags: DB overrides > config > hardcoded defaults. Scalars with
+	// a dedicated kv_settings key can be flipped via the Settings tab without
+	// editing config.yaml. Sensitive URLs / keys still come from config (env).
+	settingsStore, _ := s.(llm.SettingsStore)
+	settingsCtx, settingsCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer settingsCancel()
+
+	webSearchOn := llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyWebSearchEnabled, cfg.WebSearch.Enabled)
+	webSearchProvider := llm.GetStringSetting(settingsCtx, settingsStore, llm.SettingKeyWebSearchProvider, cfg.WebSearch.Provider)
+	if webSearchOn {
+		if webSearchProvider == "" {
+			webSearchProvider = "ollama"
 		}
 		ag.EnableWebSearch(agent.WebSearchConfig{
-			Provider: provider,
+			Provider: webSearchProvider,
 			BaseURL:  cfg.WebSearch.BaseURL,
 			APIKey:   cfg.WebSearch.APIKey,
 		})
-		logger.Info("web search enabled", "provider", provider)
+		logger.Info("web search enabled", "provider", webSearchProvider)
 	}
 
-	if cfg.WebFetch.Enabled {
+	if llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyWebFetchEnabled, cfg.WebFetch.Enabled) {
 		ag.EnableWebFetch(agent.WebFetchConfig{CDPURL: cfg.WebFetch.CDPURL})
 		logger.Info("web fetch enabled", "cdp_fallback", cfg.WebFetch.CDPURL != "")
 	}
 
-	if cfg.Filesystem.Enabled {
+	if llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyFilesystemEnabled, cfg.Filesystem.Enabled) {
 		root := cfg.Filesystem.Root
 		if root == "" {
 			root = "/assistant_context"
@@ -291,8 +297,8 @@ func main() {
 		logger.Info("filesystem tools enabled", "root", root)
 	}
 
-	if cfg.TTS.Enabled {
-		voice := cfg.TTS.Voice
+	if llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyTTSEnabled, cfg.TTS.Enabled) {
+		voice := llm.GetStringSetting(settingsCtx, settingsStore, llm.SettingKeyTTSVoice, cfg.TTS.Voice)
 		if voice == "" {
 			voice = "ru-RU-DmitryNeural"
 		}
@@ -315,7 +321,13 @@ func main() {
 	}
 
 	if cfg.VoiceAPI.Enabled {
-		voiceSrv := voiceapi.New(ag, cfg.VoiceAPI, logger)
+		// chat_id: DB override > config. Non-destructive: if no DB value,
+		// cfg.VoiceAPI.ChatID stays; if the DB holds 0, treat that as unset.
+		voiceCfg := cfg.VoiceAPI
+		if chatID := llm.GetIntSetting(settingsCtx, settingsStore, llm.SettingKeyVoiceAPIChatID, 0); chatID != 0 {
+			voiceCfg.ChatID = int64(chatID)
+		}
+		voiceSrv := voiceapi.New(ag, voiceCfg, logger)
 		go func() {
 			if err := voiceSrv.ListenAndServe(); err != nil {
 				logger.Error("voice API error", "err", err)
@@ -326,9 +338,11 @@ func main() {
 
 	if cfg.AdminAPI.Enabled {
 		capStore, _ := s.(llm.CapabilityStore)
-		settingsStore, _ := s.(llm.SettingsStore)
 		usageStore, _ := s.(llm.UsageStore)
-		adminSrv := adminapi.New(cfg.AdminAPI, router, capStore, settingsStore, usageStore, cfg, logger)
+		// trust_forward_auth: DB override > config.
+		adminCfg := cfg.AdminAPI
+		adminCfg.TrustForwardAuth = llm.GetBoolSetting(settingsCtx, settingsStore, llm.SettingKeyTrustForwardAuth, adminCfg.TrustForwardAuth)
+		adminSrv := adminapi.New(adminCfg, router, capStore, settingsStore, usageStore, cfg, logger)
 		if err := adminSrv.Start(); err != nil {
 			logger.Error("admin API failed to start", "err", err)
 		} else {

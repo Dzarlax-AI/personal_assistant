@@ -677,6 +677,12 @@ type settingSpec struct {
 // settingSpecs returns the list of scalars exposed in the Settings tab, in
 // display order. Extend this slice to surface more config keys.
 func (s *Server) settingSpecs() []settingSpec {
+	boolDefault := func(v bool) string {
+		if v {
+			return "true"
+		}
+		return "false"
+	}
 	defs := []settingSpec{
 		{
 			Key:         llm.SettingKeyClassifierTimeout,
@@ -691,6 +697,63 @@ func (s *Server) settingSpecs() []settingSpec {
 			Description: "Number of most-relevant MCP tools to include per request (0 = disabled). Applies on next restart.",
 			Default:     fmt.Sprintf("%d", s.cfgRef.ToolFilter.TopK),
 			InputType:   "number",
+		},
+		// Feature flags — changes apply on next restart.
+		{
+			Key:         llm.SettingKeyWebSearchEnabled,
+			Label:       "Web search enabled",
+			Description: "Enables the web_search tool. Use 'true' or 'false'. Applies on next restart.",
+			Default:     boolDefault(s.cfgRef.WebSearch.Enabled),
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyWebSearchProvider,
+			Label:       "Web search provider",
+			Description: "Backend for web_search: 'tavily' (free 1000/mo) or 'ollama' (legacy). Applies on next restart.",
+			Default:     s.cfgRef.WebSearch.Provider,
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyWebFetchEnabled,
+			Label:       "Web fetch enabled",
+			Description: "Enables the web_fetch tool. Use 'true' or 'false'. Applies on next restart.",
+			Default:     boolDefault(s.cfgRef.WebFetch.Enabled),
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyFilesystemEnabled,
+			Label:       "Filesystem tools enabled",
+			Description: "Enables read/write access to the mounted /assistant_context volume. Applies on next restart.",
+			Default:     boolDefault(s.cfgRef.Filesystem.Enabled),
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyTTSEnabled,
+			Label:       "TTS enabled",
+			Description: "Enables Edge TTS voice replies. Applies on next restart.",
+			Default:     boolDefault(s.cfgRef.TTS.Enabled),
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyTTSVoice,
+			Label:       "TTS voice",
+			Description: "Edge TTS voice identifier (e.g. ru-RU-DmitryNeural, en-US-EmmaMultilingualNeural). Applies on next restart.",
+			Default:     s.cfgRef.TTS.Voice,
+			InputType:   "text",
+		},
+		{
+			Key:         llm.SettingKeyVoiceAPIChatID,
+			Label:       "Voice API chat_id",
+			Description: "Telegram chat_id for voice API (Atom Echo etc). 0 keeps the config default.",
+			Default:     fmt.Sprintf("%d", s.cfgRef.VoiceAPI.ChatID),
+			InputType:   "number",
+		},
+		{
+			Key:         llm.SettingKeyTrustForwardAuth,
+			Label:       "Trust forward-auth header",
+			Description: "Admin API trusts X-authentik-username (via Traefik). Disable for local dev. Applies on next restart.",
+			Default:     boolDefault(s.cfgRef.AdminAPI.TrustForwardAuth),
+			InputType:   "text",
 		},
 	}
 	if s.settings != nil {
