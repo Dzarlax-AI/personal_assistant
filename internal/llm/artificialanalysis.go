@@ -42,7 +42,7 @@ func FetchArtificialAnalysisScores(ctx context.Context, apiKey string) (map[stri
 }
 
 type aaModelsResponse struct {
-	Status string `json:"status"`
+	Status json.RawMessage `json:"status"`
 	Data   []struct {
 		Slug        string `json:"slug"`
 		Evaluations struct {
