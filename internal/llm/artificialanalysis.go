@@ -19,7 +19,7 @@ var aaHTTPClient = &http.Client{Timeout: 20 * time.Second}
 // API docs: https://artificialanalysis.ai/api-reference
 // Free tier: 1000 req/day, attribution required.
 func FetchArtificialAnalysisScores(ctx context.Context, apiKey string) (map[string]float64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://artificialanalysis.ai/data/llms/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://artificialanalysis.ai/api/v2/data/llms/models", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func FetchArtificialAnalysisScores(ctx context.Context, apiKey string) (map[stri
 		return nil, fmt.Errorf("artificialanalysis /data/llms/models: read: %w", err)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("artificialanalysis /data/llms/models: HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("artificialanalysis /api/v2/data/llms/models: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	return parseAAModels(body)
 }
