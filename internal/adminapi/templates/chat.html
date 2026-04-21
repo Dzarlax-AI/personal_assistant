@@ -41,14 +41,17 @@
       40%           { transform: scale(1);   opacity: 0.85; }
     }
 
-    /* Per-message hover actions (Regenerate on last bot, Edit on last user). */
-    .chat-msg__actions { position: absolute; top: -0.6rem; right: 0.4rem; display: none; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
+    /* Per-message actions: a subtle footer row inside the last user/bot
+       bubble. No absolute positioning → no clipping or weird overlap
+       regardless of bubble width or screen size. Only rendered on the
+       last bubble of each role (see updateLastActions in JS). */
+    .chat-msg__actions { display: none; justify-content: flex-end; gap: 0.4rem; margin-top: 0.4rem; padding-top: 0.35rem; border-top: 1px solid rgba(0,0,0,0.1); }
     .chat-msg--last-user .chat-msg__actions,
     .chat-msg--last-bot  .chat-msg__actions { display: flex; }
-    .chat-msg--last-user:hover .chat-msg__actions,
-    .chat-msg--last-bot:hover  .chat-msg__actions { opacity: 1; }
-    .chat-msg__actions button { font-size: 0.72em; padding: 0.15em 0.5em; border-radius: 4px; border: 1px solid rgba(0,0,0,0.15); background: rgba(255,255,255,0.95); cursor: pointer; }
-    .chat-msg__actions button:disabled { opacity: 0.5; cursor: default; }
+    .chat-msg--user .chat-msg__actions { border-top-color: rgba(255,255,255,0.2); }
+    .chat-msg__actions button { font-size: 0.75em; padding: 0.2em 0.6em; border-radius: 4px; border: 1px solid currentColor; background: transparent; color: inherit; opacity: 0.75; cursor: pointer; font-family: inherit; }
+    .chat-msg__actions button:hover { opacity: 1; }
+    .chat-msg__actions button:disabled { opacity: 0.4; cursor: default; }
 
     /* Copy button injected into <pre> blocks by hydrateCodeBlocks(). */
     .chat-code-copy { position: absolute; top: 0.35rem; right: 0.35rem; font-size: 0.7em; padding: 0.1em 0.4em; border-radius: 4px; border: 1px solid rgba(0,0,0,0.15); background: rgba(255,255,255,0.9); cursor: pointer; opacity: 0.6; }
@@ -92,11 +95,7 @@
       .chat-form .chat-controls select { flex: 1; min-width: 0; }
       .chat-form .chat-controls .btn { min-height: 40px; padding-inline: 1.1em; }
       .chat-attachment { width: 3.5rem; height: 3.5rem; }
-      .chat-msg__actions { top: -0.55rem; }
       .chat-msg__actions button { opacity: 1; }
-      /* On touch devices hover is sticky; show actions always on last bubbles. */
-      .chat-msg--last-user .chat-msg__actions,
-      .chat-msg--last-bot  .chat-msg__actions { opacity: 1; }
     }
   </style>
 </head>
@@ -425,11 +424,11 @@
       var btn = document.createElement('button');
       btn.type = 'button';
       if (isUser) {
-        btn.textContent = '\u270E Edit';
+        btn.textContent = 'Edit';
         btn.title = 'Edit last message (drops the assistant reply)';
         btn.addEventListener('click', editLast);
       } else {
-        btn.textContent = '\u21BB Regenerate';
+        btn.textContent = 'Regenerate';
         btn.title = 'Regenerate the last reply';
         btn.addEventListener('click', regenerateLast);
       }
