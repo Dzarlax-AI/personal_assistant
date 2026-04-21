@@ -304,6 +304,73 @@ func (s *SQLite) ClearHistory(chatID int64) {
 	s.db.Exec(`INSERT INTO messages (chat_id, role, content, is_reset) VALUES (?, 'system', 'CONTEXT_RESET', 1)`, chatID) //nolint:errcheck
 }
 
+// DisplayHistory returns the last `limit` non-compacted rows including
+// is_reset session-break markers. Used by the admin web UI to show the
+// full recent conversation with dividers between sessions.
+func (s *SQLite) DisplayHistory(chatID int64, limit int) []HistoryItem {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.Query(`
+		SELECT role, content, parts, is_reset, created_at
+		FROM messages
+		WHERE chat_id = ? AND is_compacted = 0
+		ORDER BY id DESC LIMIT ?`,
+		chatID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []HistoryItem
+	for rows.Next() {
+		var role, content string
+		var partsJSON sql.NullString
+		var isReset int
+		var createdAt time.Time
+		if err := rows.Scan(&role, &content, &partsJSON, &isReset, &createdAt); err != nil {
+			continue
+		}
+		item := HistoryItem{Content: content, CreatedAt: createdAt}
+		if isReset == 1 {
+			item.Role = "break"
+			out = append(out, item)
+			continue
+		}
+		item.Role = role
+		if partsJSON.Valid && partsJSON.String != "" {
+			var parts []llm.ContentPart
+			if err := json.Unmarshal([]byte(partsJSON.String), &parts); err == nil {
+				// Collapse parts into display content: text parts concatenated,
+				// image URLs surfaced separately so the template can render them.
+				var textBuf strings.Builder
+				for _, p := range parts {
+					switch p.Type {
+					case "text":
+						if textBuf.Len() > 0 {
+							textBuf.WriteByte('\n')
+						}
+						textBuf.WriteString(p.Text)
+					case "image_url":
+						if p.ImageURL != nil && p.ImageURL.URL != "" {
+							item.ImageURLs = append(item.ImageURLs, p.ImageURL.URL)
+						}
+					}
+				}
+				if content == "" {
+					item.Content = textBuf.String()
+				}
+			}
+		}
+		out = append(out, item)
+	}
+	// DESC → chronological.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
 // LastUserMessage returns the most recent user-role row within the current
 // session (id > last reset). Used by admin chat for Regenerate / Edit.
 func (s *SQLite) LastUserMessage(chatID int64) (int64, string, bool) {

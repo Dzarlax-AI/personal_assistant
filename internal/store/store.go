@@ -47,6 +47,25 @@ type HistorySnippet struct {
 	BotText   string
 }
 
+// HistoryItem is one row returned by DisplayableStore.DisplayHistory — a
+// message, an image attachment descriptor, or a session-break marker. The
+// admin web UI uses this to render the conversation with <hr/>-style
+// dividers between sessions (from /clear or the 4-hour idle break).
+type HistoryItem struct {
+	Role      string    // "user" | "assistant" | "tool" | "break"
+	Content   string    // message text OR break reason
+	ImageURLs []string  // image_url parts (data URIs or http links)
+	CreatedAt time.Time // for display timestamps + divider labels
+}
+
+// DisplayableStore extends Store with a UI-oriented history fetch that
+// includes session-break markers and surfaces image attachments.
+// Implemented by SQLite and Postgres; the in-memory store skips it.
+type DisplayableStore interface {
+	Store
+	DisplayHistory(chatID int64, limit int) []HistoryItem
+}
+
 // TruncatableStore supports dropping the tail of a conversation. Used by the
 // admin web chat to implement Regenerate / Edit. LastUserMessage returns the
 // most recent user-role row within the current session (id > last reset).

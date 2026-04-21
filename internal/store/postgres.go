@@ -398,6 +398,71 @@ func (p *Postgres) ClearHistory(chatID int64) {
 	p.pool.Exec(ctx, `INSERT INTO messages (chat_id, role, content, is_reset) VALUES ($1, 'system', 'CONTEXT_RESET', TRUE)`, chatID) //nolint:errcheck
 }
 
+// DisplayHistory returns the last `limit` non-compacted rows including
+// is_reset session-break markers. Used by the admin web UI to show the
+// full recent conversation with dividers between sessions.
+func (p *Postgres) DisplayHistory(chatID int64, limit int) []HistoryItem {
+	if limit <= 0 {
+		limit = 200
+	}
+	ctx := context.Background()
+	rows, err := p.pool.Query(ctx, `
+		SELECT role, content, parts, is_reset, created_at
+		FROM messages
+		WHERE chat_id = $1 AND is_compacted = FALSE
+		ORDER BY id DESC LIMIT $2`,
+		chatID, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []HistoryItem
+	for rows.Next() {
+		var role, content string
+		var partsJSON *string
+		var isReset bool
+		var createdAt time.Time
+		if err := rows.Scan(&role, &content, &partsJSON, &isReset, &createdAt); err != nil {
+			continue
+		}
+		item := HistoryItem{Content: content, CreatedAt: createdAt}
+		if isReset {
+			item.Role = "break"
+			out = append(out, item)
+			continue
+		}
+		item.Role = role
+		if partsJSON != nil && *partsJSON != "" {
+			var parts []llm.ContentPart
+			if err := json.Unmarshal([]byte(*partsJSON), &parts); err == nil {
+				var textBuf strings.Builder
+				for _, pt := range parts {
+					switch pt.Type {
+					case "text":
+						if textBuf.Len() > 0 {
+							textBuf.WriteByte('\n')
+						}
+						textBuf.WriteString(pt.Text)
+					case "image_url":
+						if pt.ImageURL != nil && pt.ImageURL.URL != "" {
+							item.ImageURLs = append(item.ImageURLs, pt.ImageURL.URL)
+						}
+					}
+				}
+				if content == "" {
+					item.Content = textBuf.String()
+				}
+			}
+		}
+		out = append(out, item)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
 // LastUserMessage returns the most recent user-role row within the current
 // session (id > last reset). Used by admin chat for Regenerate / Edit.
 func (p *Postgres) LastUserMessage(chatID int64) (int64, string, bool) {

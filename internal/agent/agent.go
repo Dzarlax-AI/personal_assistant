@@ -120,6 +120,24 @@ func (a *Agent) GetChatHistory(chatID int64) []llm.Message {
 	return a.store.GetHistory(chatID)
 }
 
+// GetDisplayHistory returns UI-oriented history including session-break
+// markers and image attachment URLs. Falls back to plain GetHistory when
+// the backing store doesn't implement DisplayableStore. `limit` caps the
+// number of rows fetched; pass 0 for the store default.
+func (a *Agent) GetDisplayHistory(chatID int64, limit int) []store.HistoryItem {
+	if ds, ok := a.store.(store.DisplayableStore); ok {
+		return ds.DisplayHistory(chatID, limit)
+	}
+	out := make([]store.HistoryItem, 0)
+	for _, m := range a.store.GetHistory(chatID) {
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		out = append(out, store.HistoryItem{Role: m.Role, Content: m.Content})
+	}
+	return out
+}
+
 // ClearChatHistory resets the conversation for the given chat ID.
 func (a *Agent) ClearChatHistory(chatID int64) {
 	a.store.ClearHistory(chatID)

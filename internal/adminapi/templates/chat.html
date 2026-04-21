@@ -66,6 +66,13 @@
 
     /* Drag-over visual cue on the whole chat wrap. */
     .chat-wrap.drop-active { outline: 2px dashed var(--accent, #3b82f6); outline-offset: -4px; }
+
+    /* Session break divider — rendered between groups of messages separated
+       by /clear or the 4-hour idle reset. Flat horizontal line with a small
+       date pill centred on it. */
+    .chat-break { display: flex; align-items: center; gap: 0.6rem; margin: 0.75rem 0.25rem; opacity: 0.65; align-self: stretch; }
+    .chat-break::before, .chat-break::after { content: ''; flex: 1; height: 1px; background: rgba(0,0,0,0.15); }
+    .chat-break__label { font-size: 0.72em; padding: 0.1em 0.6em; border-radius: 999px; background: rgba(0,0,0,0.06); white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -80,14 +87,26 @@
 
     <div id="chat-messages" class="chat-messages">
       {{range .History}}
-      <div class="chat-msg chat-msg--{{.Role}}">
-        <div class="chat-msg__meta">{{if eq .Role "user"}}You{{else}}Assistant{{end}}</div>
-        {{if eq .Role "assistant"}}
-        <div class="chat-msg__body md" data-md="{{.Body}}"></div>
+        {{if eq .Role "break"}}
+          <div class="chat-break"><span class="chat-break__label">{{.BreakDate}}{{if .Body}} &middot; {{.Body}}{{end}}</span></div>
         {{else}}
-        <div class="chat-msg__body">{{.Body}}</div>
+          <div class="chat-msg chat-msg--{{.Role}}">
+            <div class="chat-msg__meta">
+              {{if eq .Role "user"}}You{{else}}Assistant{{end}}
+              {{if .Time}} &middot; {{.Time}}{{end}}
+            </div>
+            {{if .ImageURLs}}
+              <div class="chat-msg__body">
+                {{range .ImageURLs}}<img src="{{.}}" alt="attachment">{{end}}
+                {{if .Body}}<div>{{.Body}}</div>{{end}}
+              </div>
+            {{else if eq .Role "assistant"}}
+              <div class="chat-msg__body md" data-md="{{.Body}}"></div>
+            {{else}}
+              <div class="chat-msg__body">{{.Body}}</div>
+            {{end}}
+          </div>
         {{end}}
-      </div>
       {{end}}
     </div>
 

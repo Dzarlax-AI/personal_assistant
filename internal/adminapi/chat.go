@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"telegram-agent/internal/llm"
+	"telegram-agent/internal/store"
 )
 
 // defaultAdminChatID is used when no forward-auth user is present (local dev
@@ -22,6 +23,7 @@ type ChatAgent interface {
 	Process(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string)) (string, error)
 	ProcessStream(ctx context.Context, chatID int64, userMsg llm.Message, onToolCall func(string), onChunk func(string)) (string, error)
 	GetChatHistory(chatID int64) []llm.Message
+	GetDisplayHistory(chatID int64, limit int) []store.HistoryItem
 	ClearChatHistory(chatID int64)
 	PopLastUserTurn(chatID int64) (string, bool)
 }
@@ -67,8 +69,11 @@ func routedModel(r interface {
 }
 
 type chatMsgView struct {
-	Role string // "user" or "assistant"
-	Body string
+	Role      string   // "user" | "assistant" | "break"
+	Body      string   // message text or break reason
+	ImageURLs []string // image_url parts rendered as <img> in the bubble
+	Time      string   // HH:MM for bubble, date for break markers
+	BreakDate string   // full "2006-01-02 15:04" for dividers
 }
 
 type chatData struct {
@@ -76,15 +81,32 @@ type chatData struct {
 	History   []chatMsgView
 }
 
+// displayHistoryLimit is how many rows the Chat page loads on open. Larger
+// than the LLM context window — this is purely for UI scrollback, not
+// context. Capped to keep renders quick on slow connections.
+const displayHistoryLimit = 200
+
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	data := chatData{ActiveTab: "chat"}
 	if s.agent != nil {
 		chatID := s.chatIDFor(r)
-		for _, m := range s.agent.GetChatHistory(chatID) {
-			if m.Role != "user" && m.Role != "assistant" {
+		for _, it := range s.agent.GetDisplayHistory(chatID, displayHistoryLimit) {
+			v := chatMsgView{Role: it.Role, Body: it.Content, ImageURLs: it.ImageURLs}
+			if it.Role == "break" {
+				v.BreakDate = it.CreatedAt.Local().Format("2006-01-02 15:04")
+				v.Body = humanizeBreakReason(it.Content)
+			} else if !it.CreatedAt.IsZero() {
+				v.Time = it.CreatedAt.Local().Format("15:04")
+			}
+			// Skip tool-role rows and empty assistant tool-call placeholders —
+			// they'd just be visual noise in a human-facing view.
+			if it.Role == "tool" {
 				continue
 			}
-			data.History = append(data.History, chatMsgView{Role: m.Role, Body: m.Content})
+			if it.Role == "assistant" && v.Body == "" && len(v.ImageURLs) == 0 {
+				continue
+			}
+			data.History = append(data.History, v)
 		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -262,6 +284,22 @@ func (s *Server) handleChatClear(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<div id="chat-messages" class="chat-messages"></div>`))
+}
+
+// humanizeBreakReason turns the internal session-break reason string into a
+// short label for the UI divider. Unknown reasons fall through verbatim so
+// future break types remain visible without a code change.
+func humanizeBreakReason(raw string) string {
+	switch raw {
+	case "CONTEXT_RESET":
+		return "Cleared"
+	case "IDLE_4H":
+		return "4h idle"
+	case "":
+		return ""
+	default:
+		return raw
+	}
 }
 
 // buildUserMessage packs text + any attached images into an llm.Message.
