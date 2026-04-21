@@ -29,11 +29,17 @@ type ChatAgent interface {
 // SetAgent wires the agent so the Chat tab can process messages.
 func (s *Server) SetAgent(a ChatAgent) { s.agent = a }
 
-// chatIDFor derives a per-user chat_id from the forward-auth username when
-// available, otherwise returns the shared dev sentinel. Mapped to the negative
-// range so it never collides with positive Telegram user IDs; offset by -2 so
-// it also can't collide with the dev sentinel (-1).
+// chatIDFor returns the chat_id the web admin should read/write. Priority:
+//  1. Telegram OwnerChatID when configured — unifies the web chat with the
+//     owner's Telegram conversation so a message sent via bot shows up in
+//     the admin UI and vice versa. This is the common single-user setup.
+//  2. FNV-64 hash of X-authentik-username, mapped to the negative range,
+//     for multi-admin deployments.
+//  3. defaultAdminChatID (-1) for local dev / bearer-token auth.
 func (s *Server) chatIDFor(r *http.Request) int64 {
+	if s.cfgRef != nil && s.cfgRef.Telegram.OwnerChatID != 0 {
+		return s.cfgRef.Telegram.OwnerChatID
+	}
 	user := strings.TrimSpace(r.Header.Get(s.cfg.ForwardAuthHeader))
 	if user == "" {
 		return defaultAdminChatID
