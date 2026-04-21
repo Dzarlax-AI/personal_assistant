@@ -51,6 +51,11 @@
      focus. Applied generously so every tab's inputs behave the same. */
   input, select, textarea { font-size: max(16px, 0.95rem); }
 
+  /* The dzarlax design-system assigns display: inline-flex to .btn, which
+     outranks the browser's default [hidden]{display:none}. Without this,
+     hidden toggles on buttons (e.g. Stop in the chat form) do nothing. */
+  [hidden] { display: none !important; }
+
   /* Responsive base — tuned for phone portrait (<=640). Tabs with many
      entries become horizontally scrollable; body padding shrinks so
      content uses the full viewport. Tables inherit scrolling via
