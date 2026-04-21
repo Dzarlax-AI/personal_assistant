@@ -274,6 +274,9 @@ func (s *Server) handleChatPop(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+// handleChatClear inserts a session-break marker in the history (non-
+// destructive — prior messages stay visible with a divider above the new
+// session). Returns 204; the UI inserts the divider client-side.
 func (s *Server) handleChatClear(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -282,8 +285,7 @@ func (s *Server) handleChatClear(w http.ResponseWriter, r *http.Request) {
 	if s.agent != nil {
 		s.agent.ClearChatHistory(s.chatIDFor(r))
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(`<div id="chat-messages" class="chat-messages"></div>`))
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // humanizeBreakReason turns the internal session-break reason string into a

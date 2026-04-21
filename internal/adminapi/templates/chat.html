@@ -68,11 +68,18 @@
     .chat-wrap.drop-active { outline: 2px dashed var(--accent, #3b82f6); outline-offset: -4px; }
 
     /* Session break divider — rendered between groups of messages separated
-       by /clear or the 4-hour idle reset. Flat horizontal line with a small
-       date pill centred on it. */
+       by the "New session" button or the 4-hour idle reset. Flat horizontal
+       line with a small date pill centred on it. */
     .chat-break { display: flex; align-items: center; gap: 0.6rem; margin: 0.75rem 0.25rem; opacity: 0.65; align-self: stretch; }
     .chat-break::before, .chat-break::after { content: ''; flex: 1; height: 1px; background: rgba(0,0,0,0.15); }
     .chat-break__label { font-size: 0.72em; padding: 0.1em 0.6em; border-radius: 999px; background: rgba(0,0,0,0.06); white-space: nowrap; }
+
+    /* "+ New session" link-style button placed just above the input — visually
+       a divider you can create yourself. Muted so it doesn't compete with Send. */
+    .chat-new-session-row { display: flex; justify-content: center; margin: 0.25rem 0 0.4rem; }
+    .chat-new-session { font-size: 0.78em; padding: 0.25em 0.85em; border-radius: 999px; border: 1px dashed rgba(0,0,0,0.2); background: transparent; color: inherit; cursor: pointer; opacity: 0.7; transition: opacity 0.15s, background 0.15s; }
+    .chat-new-session:hover { opacity: 1; background: rgba(0,0,0,0.04); }
+    .chat-new-session:disabled { opacity: 0.35; cursor: default; }
   </style>
 </head>
 <body>
@@ -80,9 +87,8 @@
   {{template "admin_tabs" .}}
 
   <div class="chat-wrap" id="chat-wrap">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem; min-height:1.6rem;">
       <div style="font-size:0.8em; opacity:0.7;" id="chat-status"></div>
-      <button class="btn btn-secondary" id="chat-clear-btn">Clear</button>
     </div>
 
     <div id="chat-messages" class="chat-messages">
@@ -108,6 +114,12 @@
           </div>
         {{end}}
       {{end}}
+    </div>
+
+    <div class="chat-new-session-row">
+      <button type="button" class="chat-new-session" id="chat-new-session" title="Start a new session — keeps history, inserts a divider">
+        <span aria-hidden="true">＋</span> New session
+      </button>
     </div>
 
     <div class="chat-attachments" id="chat-attachments"></div>
@@ -564,17 +576,31 @@
     });
 
     // ============================================================
-    // Clear button.
+    // New session button — inserts a break divider server-side without
+    // destroying history. No confirm dialog because nothing is deleted.
     // ============================================================
-    document.getElementById('chat-clear-btn').addEventListener('click', function() {
-      if (!confirm('Clear chat history?')) return;
-      fetch('/chat/clear', {method: 'POST'}).then(function(r) { return r.text(); }).then(function(html) {
-        var tmp = document.createElement('div');
-        tmp.innerHTML = html;
-        var fresh = tmp.firstElementChild;
-        if (fresh) messagesEl.replaceWith(fresh);
-        messagesEl = document.getElementById('chat-messages');
-      });
+    document.getElementById('chat-new-session').addEventListener('click', function() {
+      if (currentController) return;
+      var btn = this;
+      btn.disabled = true;
+      fetch('/chat/clear', {method: 'POST'})
+        .then(function(r) { return r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)); })
+        .then(function() {
+          // Insert the break client-side so the user sees the divider right
+          // away; on next page load the server's stored is_reset row will
+          // render in the same place.
+          var now = new Date();
+          var stamp = now.toISOString().slice(0,10) + ' ' + now.toTimeString().slice(0,5);
+          var div = document.createElement('div');
+          div.className = 'chat-break';
+          div.innerHTML = '<span class="chat-break__label"></span>';
+          div.querySelector('.chat-break__label').textContent = stamp + ' \u00B7 Cleared';
+          messagesEl.appendChild(div);
+          scrollToBottom();
+          updateLastActions();
+        })
+        .catch(function(err) { statusEl.textContent = 'new session failed: ' + err.message; })
+        .finally(function() { btn.disabled = false; });
     });
 
     // Initial render + focus.
