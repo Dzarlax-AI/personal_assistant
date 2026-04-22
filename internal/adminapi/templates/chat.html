@@ -5,7 +5,7 @@
   {{template "admin_head" .}}
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
-    .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 160px); }
+    .chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 120px); max-width: 860px; margin: 0 auto; }
     .chat-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem 0; }
     .chat-msg { max-width: 80%; border-radius: var(--radius, 8px); padding: 0.6rem 0.85rem; position: relative; }
     .chat-msg--user      { align-self: flex-end; background: var(--accent, #3b82f6); color: #fff; }
@@ -84,7 +84,7 @@
     /* Mobile layout: form stacks vertically, controls row becomes a
        horizontal strip under the textarea, bubbles use more width. */
     @media (max-width: 640px) {
-      .chat-wrap { height: calc(100dvh - 110px); }
+      .chat-wrap { height: calc(100dvh - 90px); max-width: none; }
       .chat-msg { max-width: 92%; padding: 0.5rem 0.7rem; }
       .chat-form { flex-direction: column; gap: 0.45rem; }
       .chat-form textarea { min-height: 2.5rem; font-size: 1rem; }

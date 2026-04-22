@@ -34,9 +34,10 @@
             <td>
               {{if .HasPreset}}
               <button class="btn btn--ghost btn--small suggest-btn"
-                      hx-get="/models?preset={{.Name}}"
-                      hx-target="#models-content"
+                      hx-get="/models?preset={{.Name}}&provider=openrouter&full=1"
+                      hx-target="#models-browser"
                       hx-swap="outerHTML"
+                      hx-scroll="#models-section"
                       title="Filter model catalog for this role">
                 ✨ Suggest
               </button>

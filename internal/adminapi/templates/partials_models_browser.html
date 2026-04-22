@@ -2,12 +2,12 @@
 <div id="models-browser">
   <div class="catalog-tabs" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid rgba(0,0,0,0.1);">
     <button type="button" class="btn btn--small {{if eq .CatalogProvider "openrouter"}}btn--primary{{else}}btn--ghost{{end}}"
-            hx-get="/models?provider=openrouter"
-            hx-target="#models-content"
+            hx-get="/models?provider=openrouter&full=1"
+            hx-target="#models-browser"
             hx-swap="outerHTML">OpenRouter</button>
     <button type="button" class="btn btn--small {{if eq .CatalogProvider "gemini"}}btn--primary{{else}}btn--ghost{{end}}"
-            hx-get="/models?provider=gemini"
-            hx-target="#models-content"
+            hx-get="/models?provider=gemini&full=1"
+            hx-target="#models-browser"
             hx-swap="outerHTML">Gemini</button>
   </div>
   <form id="models-filters" class="filters"

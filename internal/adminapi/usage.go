@@ -42,27 +42,33 @@ type expensiveTurnView struct {
 	Answer     string // first line, up to 200 chars
 }
 
-// dailyChart describes two stacked SVG charts (calls on top, cost below)
-// that share the same X-axis layout so day columns line up exactly. Each
-// chart carries its own Y-axis ticks with labels. Pre-computed here so the
-// template stays math-free.
+// dailyChart describes a single combined SVG with two panels (calls on top,
+// cost below) sharing the same X-axis slot layout. All coordinates are
+// pre-computed so the template stays math-free. The SVG viewBox is fixed-width
+// (520 units) but renders at 100% CSS width so it scales responsively.
 type dailyChart struct {
-	Width      int
-	Height     int // per-chart height (each chart renders separately)
-	PlotTop    int
-	PlotBot    int
-	PlotLeft   int // x-coordinate of the Y-axis line
-	PlotRight  int
-	Days       int
-	// Calls series (bar chart, top)
+	Width       int
+	TotalHeight int // combined SVG height covering both panels + x-axis row
+	// Panel 1 — calls (top)
+	P1Top    int
+	P1Bot    int
+	// Panel 2 — cost (bottom)
+	P2Top    int
+	P2Bot    int
+	// Separator between panels
+	SepY int
+	PlotLeft  int // x-coordinate of the Y-axis line (shared by both panels)
+	PlotRight int
+	Days      int
+	// Calls series
 	CallsBars  []chartBar
 	CallsYAxis []yTick
 	MaxCalls   int
-	// Cost series (bar chart, bottom)
+	// Cost series
 	CostBars  []chartBar
 	CostYAxis []yTick
 	MaxCost   float64
-	// Shared X-axis — applied to the cost chart only (bottom of the stack)
+	// X-axis labels at the very bottom (shared)
 	XAxisTags []xAxisTag
 }
 
@@ -200,27 +206,32 @@ func resolvePeriod(period string) (time.Time, string) {
 	}
 }
 
-// buildDailyChart produces two synchronized SVG chart descriptions (calls
-// on top, cost on bottom) sharing padLeft/padRight + slot widths so day
-// columns line up vertically. Size: 520×100 per chart, Y-axis on the left
-// with up to 3 tick labels (0 / mid / max).
+// buildDailyChart produces a single combined SVG with two panels (calls on
+// top, cost below) sharing the same X-axis slot layout. The SVG viewBox is
+// 520 units wide and scales to 100% CSS width for responsiveness.
 func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 	const (
-		width     = 520
-		height    = 100
-		padLeft   = 48 // room for Y-axis labels
-		padRight  = 8
-		padTop    = 8
-		padBottom = 20
+		width      = 520
+		padLeft    = 52 // room for Y-axis labels
+		padRight   = 10
+		p1Top      = 18  // panel 1 plot area top
+		p1Bot      = 108 // panel 1 plot area bottom
+		sepY       = 126 // separator line between panels
+		p2Top      = 140 // panel 2 plot area top
+		p2Bot      = 228 // panel 2 plot area bottom
+		totalH     = 248 // total SVG height (includes x-axis labels row)
 	)
 	c := dailyChart{
-		Width:     width,
-		Height:    height,
-		PlotTop:   padTop,
-		PlotBot:   height - padBottom,
-		PlotLeft:  padLeft,
-		PlotRight: width - padRight,
-		Days:      len(buckets),
+		Width:       width,
+		TotalHeight: totalH,
+		P1Top:       p1Top,
+		P1Bot:       p1Bot,
+		SepY:        sepY,
+		P2Top:       p2Top,
+		P2Bot:       p2Bot,
+		PlotLeft:    padLeft,
+		PlotRight:   width - padRight,
+		Days:        len(buckets),
 	}
 	if len(buckets) == 0 {
 		return c
@@ -243,14 +254,15 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 	}
 
 	plotW := c.PlotRight - c.PlotLeft
-	plotH := c.PlotBot - c.PlotTop
+	p1H := p1Bot - p1Top
+	p2H := p2Bot - p2Top
 	slot := float64(plotW) / float64(len(buckets))
-	barW := int(slot * 0.65)
+	barW := int(slot * 0.6)
 	if barW < 2 {
 		barW = 2
 	}
-	if barW > 28 {
-		barW = 28
+	if barW > 32 {
+		barW = 32
 	}
 
 	for i, b := range buckets {
@@ -258,54 +270,55 @@ func buildDailyChart(buckets []llm.UsageDayBucket) dailyChart {
 		barX := slotCenter - barW/2
 		dayLabel := b.Day.Format("01-02")
 
-		// Calls bar
-		callsH := int(float64(b.Calls) / float64(c.MaxCalls) * float64(plotH))
+		callsH := int(float64(b.Calls) / float64(c.MaxCalls) * float64(p1H))
 		if callsH < 0 {
 			callsH = 0
 		}
 		c.CallsBars = append(c.CallsBars, chartBar{
 			X: barX, W: barW,
-			Y: c.PlotBot - callsH, H: callsH,
+			Y: p1Bot - callsH, H: callsH,
 			DayLabel: dayLabel, Calls: b.Calls, CostUSD: b.CostUSD,
 		})
 
-		// Cost bar
-		costH := int(b.CostUSD / c.MaxCost * float64(plotH))
+		costH := int(b.CostUSD / c.MaxCost * float64(p2H))
 		if costH < 0 {
 			costH = 0
 		}
 		c.CostBars = append(c.CostBars, chartBar{
 			X: barX, W: barW,
-			Y: c.PlotBot - costH, H: costH,
+			Y: p2Bot - costH, H: costH,
 			DayLabel: dayLabel, Calls: b.Calls, CostUSD: b.CostUSD,
 		})
 	}
 
-	// Y-axis ticks: 0, max/2, max — 3 lines only, keeps chart uncluttered
-	// while giving the reader concrete numbers to reference.
 	c.CallsYAxis = []yTick{
-		{Y: c.PlotBot, Label: "0"},
-		{Y: c.PlotTop + (c.PlotBot-c.PlotTop)/2, Label: intFmt(c.MaxCalls / 2)},
-		{Y: c.PlotTop, Label: intFmt(c.MaxCalls)},
+		{Y: p1Bot, Label: "0"},
+		{Y: p1Top + p1H/2, Label: intFmt(c.MaxCalls / 2)},
+		{Y: p1Top, Label: intFmt(c.MaxCalls)},
 	}
 	c.CostYAxis = []yTick{
-		{Y: c.PlotBot, Label: "$0"},
-		{Y: c.PlotTop + (c.PlotBot-c.PlotTop)/2, Label: priceFmt(c.MaxCost / 2)},
-		{Y: c.PlotTop, Label: priceFmt(c.MaxCost)},
+		{Y: p2Bot, Label: "$0"},
+		{Y: p2Top + p2H/2, Label: priceFmt(c.MaxCost / 2)},
+		{Y: p2Top, Label: priceFmt(c.MaxCost)},
 	}
 
-	// X-axis — sparse labels at first / middle / last day, applied to the
-	// bottom chart in the template.
-	addTag := func(i int) {
-		slotCenter := c.PlotLeft + int((float64(i)+0.5)*slot)
-		c.XAxisTags = append(c.XAxisTags, xAxisTag{X: slotCenter, Label: buckets[i].Day.Format("01-02")})
+	// X-axis: label every day up to 15 days; above that switch to sparse
+	// (first, every 5th, last) to avoid crowding.
+	n := len(buckets)
+	xLabel := func(i int) {
+		sc := c.PlotLeft + int((float64(i)+0.5)*slot)
+		c.XAxisTags = append(c.XAxisTags, xAxisTag{X: sc, Label: buckets[i].Day.Format("01/02")})
 	}
-	addTag(0)
-	if len(buckets) >= 3 {
-		addTag(len(buckets) / 2)
-	}
-	if len(buckets) > 1 {
-		addTag(len(buckets) - 1)
+	if n <= 15 {
+		for i := range buckets {
+			xLabel(i)
+		}
+	} else {
+		xLabel(0)
+		for i := 4; i < n-1; i += 5 {
+			xLabel(i)
+		}
+		xLabel(n - 1)
 	}
 	return c
 }

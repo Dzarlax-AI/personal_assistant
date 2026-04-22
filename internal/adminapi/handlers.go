@@ -107,7 +107,11 @@ func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := render(w, viewModelsContent, data); err != nil {
+	view := viewModelsContent
+	if r.URL.Query().Get("full") == "1" {
+		view = viewModelsBrowser
+	}
+	if err := render(w, view, data); err != nil {
 		s.logger.Error("render models_content", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}

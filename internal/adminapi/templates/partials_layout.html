@@ -37,23 +37,31 @@
   .suggest-btn { margin-left: 0.5rem; }
   .table-wrap { overflow-x: auto; }
   .table-wrap table { width: 100%; }
+  /* KPI bar: cap individual card width so they don't sprawl on wide screens. */
+  .kpi-bar { flex-wrap: wrap; }
+  .kpi-item { flex: 1 1 150px; min-width: 130px; max-width: 200px; }
   .usage-toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-  .usage-chart-wrap { margin-bottom: 1.5rem; padding: 0.75rem; background: rgba(0,0,0,0.03); border-radius: var(--radius); max-width: 640px; }
-  .usage-chart-title { font-size: 0.85em; margin-bottom: 0.5rem; color: var(--text-secondary); }
-  .usage-chart { width: 100%; height: auto; display: block; max-height: 140px; }
-  .usage-chart + .usage-chart { margin-top: 0.25rem; }
+  .usage-chart-wrap { margin-bottom: 1.5rem; padding: 0.75rem 1rem; background: var(--surface-2, rgba(0,0,0,0.03)); border-radius: var(--radius); }
+  .usage-chart-title { font-size: 0.82em; margin-bottom: 0.5rem; color: var(--text-secondary); }
+  .usage-chart { width: 100%; height: auto; display: block; }
   .usage-chart rect:hover { opacity: 1 !important; }
-  .usage-section-h { font-size: 0.95em; margin-top: 1.5rem; margin-bottom: 0.5rem; font-weight: 600; }
+  .usage-breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+  .usage-section-h { font-size: 0.95em; margin-top: 0; margin-bottom: 0.5rem; font-weight: 600; }
   .usage-turns td { vertical-align: top; }
   .usage-turn__q { color: var(--text); margin-bottom: 0.25rem; font-size: 0.9em; }
   .usage-turn__a { color: var(--text-secondary); font-size: 0.9em; }
+  .usage-empty { text-align: center; padding: 3rem 1rem; color: var(--text-secondary); }
+  .usage-empty__icon { font-size: 2.5rem; margin-bottom: 0.75rem; opacity: 0.4; }
+  .usage-empty__title { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
+  .usage-empty__hint { font-size: 0.875rem; }
 
   @media (max-width: 640px) {
     body { padding: 0 0.75rem 1.5rem; }
     .admin-section { margin-bottom: 1.25rem; }
     .filters { gap: 0.5rem; }
     .filters input[type="text"], .filters input[type="search"] { flex: 1 1 100%; min-width: 0; }
-    .usage-chart-wrap { padding: 0.5rem; }
+    .usage-chart-wrap { padding: 0.5rem 0.6rem; }
+    .usage-breakdown { grid-template-columns: 1fr; gap: 1rem; }
     .preset-banner { padding: 0.6rem 0.75rem; flex-direction: column; align-items: flex-start; }
     /* Min 40px touch target. */
     .btn { min-height: 40px; }
@@ -72,14 +80,12 @@
 {{end}}
 
 {{define "admin_header"}}
-<nav class="navbar">
-  <a class="navbar__brand" href="/">Personal Assistant</a>
-</nav>
 {{template "admin_tabs" .}}
 {{end}}
 
 {{define "admin_tabs"}}
-<nav class="tab-nav">
+<nav class="tab-nav" style="align-items:center;">
+  <a class="navbar__brand" href="/" style="margin-right:1rem;font-weight:600;text-decoration:none;color:var(--text);white-space:nowrap;align-self:center;">Personal Assistant</a>
   <a class="{{if eq .ActiveTab "chat"}}active{{end}}" href="/chat">Chat</a>
   <a class="{{if eq .ActiveTab "routing"}}active{{end}}" href="/">Routing & Models</a>
   <a class="{{if eq .ActiveTab "analytics"}}active{{end}}" href="/analytics">Analytics</a>

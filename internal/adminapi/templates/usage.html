@@ -56,100 +56,108 @@
     </div>
   </div>
 
-  <!-- Daily charts (last 30 days regardless of period toggle) -->
-  {{if gt .DailyChart.Days 0}}
-  {{$c := .DailyChart}}
+  <!-- Daily chart — single SVG with two panels (calls top, cost bottom) -->
+  {{if gt .DailyChart.Days 0}}{{$c := .DailyChart}}
   <div class="usage-chart-wrap">
-    <div class="usage-chart-title">
-      Daily activity — {{$c.Days}} day(s) with usage in the last 30.
-    </div>
+    <div class="usage-chart-title">Daily activity — {{$c.Days}} day(s) with data in the last 30</div>
+    <svg viewBox="0 0 {{$c.Width}} {{$c.TotalHeight}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
 
-    <!-- Calls chart (top) -->
-    <svg viewBox="0 0 {{$c.Width}} {{$c.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
-      <!-- y-axis line -->
-      <line x1="{{$c.PlotLeft}}" y1="{{$c.PlotTop}}" x2="{{$c.PlotLeft}}" y2="{{$c.PlotBot}}" stroke="#bbb" />
-      <!-- y-axis ticks + labels + horizontal guides -->
+      <!-- ── Panel 1: Calls ─────────────────────────────────────────── -->
+      <text x="{{sub $c.PlotLeft 4}}" y="{{sub $c.P1Top 4}}" font-size="9" fill="var(--text-secondary,#888)" font-weight="600" text-anchor="end">calls</text>
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.P1Top}}" x2="{{$c.PlotLeft}}" y2="{{$c.P1Bot}}" stroke="var(--border,#ddd)" />
       {{range $c.CallsYAxis}}
-        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="#bbb" />
-        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="#eee" stroke-dasharray="2 3" />
-        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="end">{{.Label}}</text>
+        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="var(--border,#ddd)" />
+        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="var(--border,#eee)" stroke-dasharray="3 4" opacity="0.6" />
+        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary,#666)" text-anchor="end">{{.Label}}</text>
       {{end}}
-      <!-- y-axis label -->
-      <text x="10" y="{{add $c.PlotTop 4}}" font-size="9" fill="var(--text-secondary, #888)" font-weight="600">calls</text>
-      <!-- bars -->
       {{range $c.CallsBars}}
-        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="#3b82f6" opacity="0.8" rx="1">
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="var(--accent,#3b82f6)" opacity="0.75" rx="2">
           <title>{{.DayLabel}}&#10;{{.Calls}} calls · {{priceFmt .CostUSD}}</title>
         </rect>
       {{end}}
-    </svg>
 
-    <!-- Cost chart (bottom) — same X-axis layout for day-by-day comparison -->
-    <svg viewBox="0 0 {{$c.Width}} {{$c.Height}}" class="usage-chart" xmlns="http://www.w3.org/2000/svg">
-      <line x1="{{$c.PlotLeft}}" y1="{{$c.PlotTop}}" x2="{{$c.PlotLeft}}" y2="{{$c.PlotBot}}" stroke="#bbb" />
+      <!-- ── Separator ──────────────────────────────────────────────── -->
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.SepY}}" x2="{{$c.PlotRight}}" y2="{{$c.SepY}}" stroke="var(--border,#e0e0e0)" />
+      <text x="{{add $c.PlotLeft 6}}" y="{{add $c.SepY 10}}" font-size="9" fill="var(--text-secondary,#888)" font-weight="600">cost $</text>
+
+      <!-- ── Panel 2: Cost ──────────────────────────────────────────── -->
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.P2Top}}" x2="{{$c.PlotLeft}}" y2="{{$c.P2Bot}}" stroke="var(--border,#ddd)" />
       {{range $c.CostYAxis}}
-        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="#bbb" />
-        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="#eee" stroke-dasharray="2 3" />
-        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="end">{{.Label}}</text>
+        <line x1="{{sub $c.PlotLeft 3}}" y1="{{.Y}}" x2="{{$c.PlotLeft}}" y2="{{.Y}}" stroke="var(--border,#ddd)" />
+        <line x1="{{$c.PlotLeft}}" y1="{{.Y}}" x2="{{$c.PlotRight}}" y2="{{.Y}}" stroke="var(--border,#eee)" stroke-dasharray="3 4" opacity="0.6" />
+        <text x="{{sub $c.PlotLeft 6}}" y="{{add .Y 3}}" font-size="9" fill="var(--text-secondary,#666)" text-anchor="end">{{.Label}}</text>
       {{end}}
-      <text x="10" y="{{add $c.PlotTop 4}}" font-size="9" fill="var(--text-secondary, #888)" font-weight="600">cost</text>
       {{range $c.CostBars}}
-        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="#10b981" opacity="0.8" rx="1">
+        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" fill="#10b981" opacity="0.75" rx="2">
           <title>{{.DayLabel}}&#10;{{priceFmt .CostUSD}} · {{.Calls}} calls</title>
         </rect>
       {{end}}
-      <!-- Shared X-axis labels: only on the bottom chart so the stack reads as one figure. -->
+
+      <!-- ── X-axis labels (shared, bottom) ────────────────────────── -->
+      <line x1="{{$c.PlotLeft}}" y1="{{$c.P2Bot}}" x2="{{$c.PlotRight}}" y2="{{$c.P2Bot}}" stroke="var(--border,#ddd)" />
       {{range $c.XAxisTags}}
-        <text x="{{.X}}" y="{{sub $c.Height 4}}" font-size="9" fill="var(--text-secondary, #666)" text-anchor="middle">{{.Label}}</text>
+        <text x="{{.X}}" y="{{add $c.P2Bot 13}}" font-size="9" fill="var(--text-secondary,#666)" text-anchor="middle">{{.Label}}</text>
       {{end}}
+
     </svg>
+  </div>
+  {{else}}
+  <div class="usage-empty">
+    <div class="usage-empty__icon">📊</div>
+    <div class="usage-empty__title">No activity in this period</div>
+    <div class="usage-empty__hint">Send a message through the bot or the Chat tab to generate usage data.</div>
   </div>
   {{end}}
 
-  <!-- By model -->
-  <h3 class="usage-section-h">Top models — by cost ({{.Period}})</h3>
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th title="provider/model identifier">Model</th>
-        <th title="Total number of LLM calls">Calls</th>
-        <th title="Prompt (input) tokens">Prompt</th>
-        <th title="Completion (output) tokens">Completion</th>
-        <th title="Authoritative USD cost reported by provider">Cost</th>
-      </tr></thead>
-      <tbody>
-        {{range .ByModel}}
-        <tr>
-          <td><code>{{.Provider}}/{{.ModelID}}</code></td>
-          <td class="price-cell">{{intFmt .Calls}}</td>
-          <td class="price-cell">{{tokenShort .PromptTokens}}</td>
-          <td class="price-cell">{{tokenShort .CompletionTokens}}</td>
-          <td class="price-cell">{{priceFmt .CostUSD}}</td>
-        </tr>
-        {{else}}
-        <tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
+  <!-- By model + By role — side by side on wide screens -->
+  <div class="usage-breakdown">
+    <div>
+      <h3 class="usage-section-h">Top models — by cost ({{.Period}})</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th title="provider/model identifier">Model</th>
+            <th title="Total number of LLM calls">Calls</th>
+            <th title="Prompt (input) tokens">Prompt</th>
+            <th title="Completion (output) tokens">Completion</th>
+            <th title="Authoritative USD cost reported by provider">Cost</th>
+          </tr></thead>
+          <tbody>
+            {{range .ByModel}}
+            <tr>
+              <td><code>{{.Provider}}/{{.ModelID}}</code></td>
+              <td class="price-cell">{{intFmt .Calls}}</td>
+              <td class="price-cell">{{tokenShort .PromptTokens}}</td>
+              <td class="price-cell">{{tokenShort .CompletionTokens}}</td>
+              <td class="price-cell">{{priceFmt .CostUSD}}</td>
+            </tr>
+            {{else}}
+            <tr><td colspan="5" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-  <!-- By role -->
-  <h3 class="usage-section-h">By role ({{.Period}})</h3>
-  <div class="table-wrap" style="max-width:640px;">
-    <table>
-      <thead><tr><th>Role</th><th>Calls</th><th>Cost</th></tr></thead>
-      <tbody>
-        {{range .ByRole}}
-        <tr>
-          <td><code>{{.Role}}</code></td>
-          <td class="price-cell">{{intFmt .Calls}}</td>
-          <td class="price-cell">{{priceFmt .CostUSD}}</td>
-        </tr>
-        {{else}}
-        <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
-        {{end}}
-      </tbody>
-    </table>
+    <div>
+      <h3 class="usage-section-h">By role ({{.Period}})</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Role</th><th>Calls</th><th>Cost</th></tr></thead>
+          <tbody>
+            {{range .ByRole}}
+            <tr>
+              <td><code>{{.Role}}</code></td>
+              <td class="price-cell">{{intFmt .Calls}}</td>
+              <td class="price-cell">{{priceFmt .CostUSD}}</td>
+            </tr>
+            {{else}}
+            <tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">No calls in this window.</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
   <!-- Expensive turns -->
