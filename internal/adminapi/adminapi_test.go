@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/store"
@@ -282,6 +283,172 @@ func TestTGAdminModelSetUpdatesCurrentRoleSlot(t *testing.T) {
 	}
 	if provider.caps.PromptPrice != 1.0 {
 		t.Fatalf("caps not applied: %+v", provider.caps)
+	}
+}
+
+type fakeTGOperationsAgent struct {
+	clearedChatID int64
+	compactChatID int64
+	compactErr    error
+	stats         store.ChatStats
+	statsOK       bool
+	tools         []agent.ToolInfo
+}
+
+func (f *fakeTGOperationsAgent) ClearHistory(chatID int64) {
+	f.clearedChatID = chatID
+}
+
+func (f *fakeTGOperationsAgent) Compact(_ context.Context, chatID int64) error {
+	f.compactChatID = chatID
+	return f.compactErr
+}
+
+func (f *fakeTGOperationsAgent) GetStats(int64) (store.ChatStats, bool) {
+	return f.stats, f.statsOK
+}
+
+func (f *fakeTGOperationsAgent) ListTools() []agent.ToolInfo {
+	return f.tools
+}
+
+type fakeMCPReloader struct {
+	configs   map[string]config.MCPServerConfig
+	toolCount int
+}
+
+func (f *fakeMCPReloader) ReloadMCP(_ context.Context, configs map[string]config.MCPServerConfig) (int, error) {
+	f.configs = configs
+	return f.toolCount, nil
+}
+
+type fakeSettingsStore struct {
+	values map[string]string
+}
+
+func (f fakeSettingsStore) GetSetting(_ context.Context, key string) (string, bool, error) {
+	v, ok := f.values[key]
+	return v, ok, nil
+}
+
+func (f fakeSettingsStore) PutSetting(context.Context, string, string) error {
+	return nil
+}
+
+func TestTGAdminStatsReturnsOwnerChatStats(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.opsAgent = &fakeTGOperationsAgent{
+		statsOK: true,
+		stats: store.ChatStats{
+			ActiveMessages: 7,
+			ActiveChars:    1234,
+			LastMessageAt:  time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/stats", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Available || payload.ActiveMessages != 7 || payload.ActiveChars != 1234 {
+		t.Fatalf("unexpected stats: %+v", payload)
+	}
+}
+
+func TestTGAdminToolsReturnsGroupedTools(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.opsAgent = &fakeTGOperationsAgent{tools: []agent.ToolInfo{
+		{Name: "search", ServerName: "memory"},
+		{Name: "recall", ServerName: "memory"},
+		{Name: "query", ServerName: "finance"},
+	}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/tools", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload []tgAdminToolGroup
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 2 || payload[0].Server != "finance" || payload[1].Server != "memory" {
+		t.Fatalf("unexpected groups: %+v", payload)
+	}
+	if strings.Join(payload[1].Tools, ",") != "recall,search" {
+		t.Fatalf("memory tools not sorted: %+v", payload[1].Tools)
+	}
+}
+
+func TestTGAdminActionRejectsUnknownAction(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/action", strings.NewReader(`{"action":"bad"}`))
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestTGAdminClearActionClearsOwnerChat(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	ops := &fakeTGOperationsAgent{statsOK: true}
+	s.opsAgent = ops
+
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/action", strings.NewReader(`{"action":"clear"}`))
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ops.clearedChatID != 42 {
+		t.Fatalf("cleared chat id = %d, want 42", ops.clearedChatID)
+	}
+}
+
+func TestTGAdminMCPReloadUsesSettingsConfig(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	serversJSON := `{"memory":{"type":"http","url":"http://memory:8080"}}`
+	s.settings = fakeSettingsStore{values: map[string]string{SettingKeyMCPServers: serversJSON}}
+	reloader := &fakeMCPReloader{toolCount: 3}
+	s.reloader = reloader
+
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/action", strings.NewReader(`{"action":"mcp_reload"}`))
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(reloader.configs) != 1 || reloader.configs["memory"].URL != "http://memory:8080" {
+		t.Fatalf("unexpected reload configs: %+v", reloader.configs)
 	}
 }
 

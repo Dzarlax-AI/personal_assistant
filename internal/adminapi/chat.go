@@ -30,8 +30,14 @@ type ChatAgent interface {
 	PopLastUserTurn(chatID int64) (string, bool)
 }
 
-// SetAgent wires the agent so the Chat tab can process messages.
-func (s *Server) SetAgent(a ChatAgent) { s.agent = a }
+// SetAgent wires the agent so the Chat tab and Telegram Mini App operations
+// can call the shared runtime without importing concrete agent state elsewhere.
+func (s *Server) SetAgent(a ChatAgent) {
+	s.agent = a
+	if ops, ok := a.(TGOperationalAgent); ok {
+		s.opsAgent = ops
+	}
+}
 
 // chatIDFor returns the chat_id the web admin should read/write. Priority:
 //  1. Telegram OwnerChatID when configured — unifies the web chat with the

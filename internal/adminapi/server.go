@@ -13,14 +13,23 @@ import (
 	"strings"
 	"time"
 
+	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
+	"telegram-agent/internal/store"
 )
 
 // MCPReloader is the minimal surface the admin UI needs from the bot's MCP
 // client to hot-reload after a save/delete. Agent implements it; nil-safe.
 type MCPReloader interface {
 	ReloadMCP(ctx context.Context, configs map[string]config.MCPServerConfig) (int, error)
+}
+
+type TGOperationalAgent interface {
+	ClearHistory(chatID int64)
+	Compact(ctx context.Context, chatID int64) error
+	GetStats(chatID int64) (store.ChatStats, bool)
+	ListTools() []agent.ToolInfo
 }
 
 // Server wraps an http.Server + the upstream dependencies it needs to render
@@ -34,6 +43,7 @@ type Server struct {
 	cfgRef     *config.Config    // needed for enumerating OpenRouter slots
 	reloader   MCPReloader       // may be nil (local dev / tests)
 	agent      ChatAgent         // may be nil (admin UI only, no chat tab)
+	opsAgent   TGOperationalAgent
 	logger     *slog.Logger
 
 	httpSrv *http.Server
@@ -126,7 +136,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/models", authed(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/routing", authed(http.HandlerFunc(s.handleRouting)))
 	mux.Handle("/slots/", authed(http.HandlerFunc(s.handleSlotAssign))) // POST /slots/{slot}/assign
-	mux.Handle("/routing/", authed(http.HandlerFunc(s.handleRoleSet))) // POST /routing/{role}/set
+	mux.Handle("/routing/", authed(http.HandlerFunc(s.handleRoleSet)))  // POST /routing/{role}/set
 	mux.Handle("/refresh", authed(http.HandlerFunc(s.handleRefresh)))
 	mux.Handle("/usage", authed(http.HandlerFunc(s.handleUsage)))
 	mux.Handle("/analytics", authed(http.HandlerFunc(s.handleAnalytics)))

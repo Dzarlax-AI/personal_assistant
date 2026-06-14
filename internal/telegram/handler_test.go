@@ -44,3 +44,22 @@ func TestAdminMiniAppKeyboardSerializesWebAppButton(t *testing.T) {
 		t.Fatalf("browser fallback URL missing: %s", got)
 	}
 }
+
+func TestDefaultBotCommandsAreOperationalOnly(t *testing.T) {
+	commands := defaultBotCommands()
+	got := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		got = append(got, cmd.Command)
+	}
+
+	want := []string{"admin", "help"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("commands = %#v, want %#v", got, want)
+	}
+
+	for _, advanced := range []string{"clear", "compact", "stats", "model", "routing", "tools", "mcp", "claude", "exit"} {
+		if slices.Contains(got, advanced) {
+			t.Fatalf("advanced command %q should not be in online menu: %#v", advanced, got)
+		}
+	}
+}

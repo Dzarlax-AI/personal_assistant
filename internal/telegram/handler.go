@@ -775,16 +775,17 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		h.send(chatID, fmt.Sprintf(
 			"Hi\\! I'm your personal AI assistant\\.\n\n"+
 				"Model: `%s`\n\n"+
-				"/clear — reset context\n"+
-				"/compact — compress history\n"+
-				"/model list — available models\n"+
-				"/tools — available tools\n"+
+				"/admin — open admin Mini App\n"+
 				"/help — help",
 			h.agent.ModelName(),
 		))
 	case "help":
 		h.send(chatID, fmt.Sprintf(
 			"*Commands:*\n\n"+
+				"/admin — open admin Mini App\n"+
+				"/help — this help\n\n"+
+				"Routine operations moved to the Mini App: routing, model selection, stats, tools, MCP reload, compact, and clear context\\.\n\n"+
+				"*Fallback commands:*\n"+
 				"/clear — reset conversation context\n"+
 				"/compact — compress history \\(summarise\\)\n"+
 				"/stats — history size, model, last compact\n"+
@@ -792,14 +793,13 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"/model list — available models\n"+
 				"/model <name> — switch model\n"+
 				"/model reset — back to auto\\-routing\n"+
-				"/admin — open admin Mini App\n"+
+				"/routing — configure routing \\(inline UI\\)\n"+
 				"/claude <question> — enter Claude mode\n"+
 				"/exit — exit Claude mode\n"+
 				"/tools — list MCP tools\n"+
-				"/mcp update — reload MCP servers\n"+
-				"/help — this help\n\n"+
+				"/mcp update — reload MCP servers\n\n"+
 				"*Model:* `%s`\n"+
-				"Responses longer than 4096 chars are sent as a `.md` file\\.",
+				"Assistant replies use Telegram Rich Messages when supported, with HTML/file fallback for incompatible or oversized output\\.",
 			h.agent.ModelName(),
 		))
 	case "clear":
@@ -1470,21 +1470,16 @@ func roleValue(cfg llm.RouterConfig, role string) string {
 }
 
 func registerCommands(bot *tgbotapi.BotAPI) error {
+	_, err := bot.Request(tgbotapi.NewSetMyCommands(defaultBotCommands()...))
+	return err
+}
+
+func defaultBotCommands() []tgbotapi.BotCommand {
 	commands := []tgbotapi.BotCommand{
-		{Command: "clear", Description: "Reset conversation context"},
-		{Command: "compact", Description: "Compress history (summarise)"},
-		{Command: "model", Description: "Show / switch model"},
-		{Command: "claude", Description: "Enter Claude mode (heavy tasks)"},
-		{Command: "exit", Description: "Exit Claude mode, back to auto-routing"},
-		{Command: "routing", Description: "Configure routing (inline UI)"},
 		{Command: "admin", Description: "Open admin Mini App"},
-		{Command: "tools", Description: "List connected MCP tools"},
-		{Command: "mcp", Description: "MCP management (update/reload)"},
-		{Command: "stats", Description: "Show history size, model, last compact"},
 		{Command: "help", Description: "Help"},
 	}
-	_, err := bot.Request(tgbotapi.NewSetMyCommands(commands...))
-	return err
+	return commands
 }
 
 func (h *Handler) handleMCPCommand(chatID int64, args string) {

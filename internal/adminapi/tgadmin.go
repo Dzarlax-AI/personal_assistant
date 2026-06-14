@@ -100,6 +100,26 @@ type tgAdminMCPServer struct {
 	Status string `json:"status"`
 }
 
+type tgAdminStats struct {
+	Available      bool   `json:"available"`
+	ActiveMessages int    `json:"active_messages"`
+	ActiveChars    int    `json:"active_chars"`
+	LastCompactAt  string `json:"last_compact_at,omitempty"`
+	LastMessageAt  string `json:"last_message_at,omitempty"`
+}
+
+type tgAdminToolGroup struct {
+	Server string   `json:"server"`
+	Tools  []string `json:"tools"`
+}
+
+type tgAdminActionResponse struct {
+	OK      bool            `json:"ok"`
+	Message string          `json:"message"`
+	Summary *tgAdminSummary `json:"summary,omitempty"`
+	Stats   *tgAdminStats   `json:"stats,omitempty"`
+}
+
 func (s *Server) handleTGAdmin(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/tg-admin" {
 		http.NotFound(w, r)
@@ -121,6 +141,12 @@ func (s *Server) handleTGAdminRouter(w http.ResponseWriter, r *http.Request) {
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminModelSet)).ServeHTTP(w, r)
 	case "/tg-admin/api/routing":
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminRoutingSet)).ServeHTTP(w, r)
+	case "/tg-admin/api/stats":
+		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminStats)).ServeHTTP(w, r)
+	case "/tg-admin/api/tools":
+		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminTools)).ServeHTTP(w, r)
+	case "/tg-admin/api/action":
+		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminAction)).ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -563,6 +589,174 @@ func buildTGAdminMCP(servers map[string]config.MCPServerConfig) []tgAdminMCPServ
 		out = append(out, tgAdminMCPServer{Name: name, Type: cfg.Type, Status: status})
 	}
 	return out
+}
+
+func (s *Server) ownerChatID() (int64, bool) {
+	if s.cfgRef == nil || s.cfgRef.Telegram.OwnerChatID == 0 {
+		return 0, false
+	}
+	return s.cfgRef.Telegram.OwnerChatID, true
+}
+
+func (s *Server) handleTGAdminStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	stats, ok := s.buildTGAdminStats()
+	if !ok {
+		http.Error(w, "stats unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, stats)
+}
+
+func (s *Server) buildTGAdminStats() (tgAdminStats, bool) {
+	if s.opsAgent == nil {
+		return tgAdminStats{}, false
+	}
+	chatID, ok := s.ownerChatID()
+	if !ok {
+		return tgAdminStats{}, false
+	}
+	stats, available := s.opsAgent.GetStats(chatID)
+	if !available {
+		return tgAdminStats{Available: false}, true
+	}
+	return tgAdminStats{
+		Available:      true,
+		ActiveMessages: stats.ActiveMessages,
+		ActiveChars:    stats.ActiveChars,
+		LastCompactAt:  formatOptionalTime(stats.LastCompactAt),
+		LastMessageAt:  formatOptionalTime(stats.LastMessageAt),
+	}, true
+}
+
+func formatOptionalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
+func (s *Server) handleTGAdminTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.opsAgent == nil {
+		http.Error(w, "tools unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, s.buildTGAdminTools())
+}
+
+func (s *Server) buildTGAdminTools() []tgAdminToolGroup {
+	byServer := make(map[string][]string)
+	for _, tool := range s.opsAgent.ListTools() {
+		byServer[tool.ServerName] = append(byServer[tool.ServerName], tool.Name)
+	}
+	servers := make([]string, 0, len(byServer))
+	for server := range byServer {
+		servers = append(servers, server)
+		sort.Strings(byServer[server])
+	}
+	sort.Strings(servers)
+	out := make([]tgAdminToolGroup, 0, len(servers))
+	for _, server := range servers {
+		out = append(out, tgAdminToolGroup{Server: server, Tools: byServer[server]})
+	}
+	return out
+}
+
+func (s *Server) handleTGAdminAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req.Action = strings.TrimSpace(req.Action)
+	if req.Action == "" {
+		http.Error(w, "action required", http.StatusBadRequest)
+		return
+	}
+
+	switch req.Action {
+	case "clear":
+		s.handleTGAdminClearAction(w, r)
+	case "compact":
+		s.handleTGAdminCompactAction(w, r)
+	case "mcp_reload":
+		s.handleTGAdminMCPReloadAction(w, r)
+	default:
+		http.Error(w, "unknown action", http.StatusBadRequest)
+	}
+}
+
+func (s *Server) handleTGAdminClearAction(w http.ResponseWriter, r *http.Request) {
+	if s.opsAgent == nil {
+		http.Error(w, "agent unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	chatID, ok := s.ownerChatID()
+	if !ok {
+		http.Error(w, "owner chat unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.opsAgent.ClearHistory(chatID)
+	stats, _ := s.buildTGAdminStats()
+	writeJSON(w, tgAdminActionResponse{OK: true, Message: "Context cleared.", Stats: &stats})
+}
+
+func (s *Server) handleTGAdminCompactAction(w http.ResponseWriter, r *http.Request) {
+	if s.opsAgent == nil {
+		http.Error(w, "agent unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	chatID, ok := s.ownerChatID()
+	if !ok {
+		http.Error(w, "owner chat unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := s.opsAgent.Compact(ctx, chatID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	stats, _ := s.buildTGAdminStats()
+	writeJSON(w, tgAdminActionResponse{OK: true, Message: "History compacted.", Stats: &stats})
+}
+
+func (s *Server) handleTGAdminMCPReloadAction(w http.ResponseWriter, r *http.Request) {
+	if s.reloader == nil {
+		http.Error(w, "mcp reload unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	servers := s.loadMCPForUI(ctx)
+	if len(servers) == 0 {
+		http.Error(w, "no mcp servers configured", http.StatusBadRequest)
+		return
+	}
+	toolCount, err := s.reloader.ReloadMCP(ctx, servers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	summary := s.buildTGAdminSummary(ctx)
+	writeJSON(w, tgAdminActionResponse{
+		OK:      true,
+		Message: fmt.Sprintf("MCP reloaded: %d servers, %d tools.", len(servers), toolCount),
+		Summary: &summary,
+	})
 }
 
 func (s *Server) handleTGAdminRoutingSet(w http.ResponseWriter, r *http.Request) {
