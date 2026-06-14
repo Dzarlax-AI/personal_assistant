@@ -133,7 +133,16 @@ func collectRankingSignals(v any, source string, out *[]OpenRouterMarketSignal) 
 		if sig, ok := signalFromRankingObject(x, source); ok {
 			*out = append(*out, sig)
 		}
-		for _, item := range x {
+		for key, item := range x {
+			if looksLikeOpenRouterModelID(key) {
+				if score := numericValue(item); score > 0 {
+					*out = append(*out, OpenRouterMarketSignal{
+						ModelID: key,
+						Score:   score,
+						Source:  source,
+					})
+				}
+			}
 			collectRankingSignals(item, source, out)
 		}
 	}
@@ -243,6 +252,21 @@ func firstFloat(obj map[string]any, keys ...string) float64 {
 		}
 	}
 	return 0
+}
+
+func numericValue(v any) float64 {
+	switch n := v.(type) {
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	case float64:
+		return n
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSuffix(n, "%"), 64)
+		return f
+	default:
+		return 0
+	}
 }
 
 func StoreOpenRouterRankingsCache(ctx context.Context, settings SettingsStore, models map[string]OpenRouterMarketSignal) error {

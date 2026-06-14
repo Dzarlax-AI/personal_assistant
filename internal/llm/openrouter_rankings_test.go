@@ -7,6 +7,7 @@ func TestParseOpenRouterRankingSignalsFlexibleShapes(t *testing.T) {
 		"data": [
 			{"model_id": "deepseek/deepseek-v3.2", "rank": 2, "tokenShare": 12.5},
 			{"model": {"id": "x-ai/grok-4.3"}, "value": 4200},
+			{"x": "2026-06-14", "ys": {"minimax/minimax-m2.5": 9000}},
 			{"id": "not-a-model"},
 			{"slug": "google/gemini-2.5-pro", "percentage": "7.25"}
 		]
@@ -27,6 +28,9 @@ func TestParseOpenRouterRankingSignalsFlexibleShapes(t *testing.T) {
 	}
 	if got["google/gemini-2.5-pro"].Share != 7.25 {
 		t.Fatalf("gemini share = %v, want 7.25", got["google/gemini-2.5-pro"].Share)
+	}
+	if got["minimax/minimax-m2.5"].Score != 9000 {
+		t.Fatalf("minimax score = %v, want 9000", got["minimax/minimax-m2.5"].Score)
 	}
 	if _, ok := got["not-a-model"]; ok {
 		t.Fatalf("invalid model id should be ignored: %+v", got["not-a-model"])
