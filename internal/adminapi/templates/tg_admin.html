@@ -614,6 +614,16 @@
             warnings.textContent = model.warnings.slice(0, 2).join(" · ");
             body.appendChild(warnings);
           }
+          if (model.telemetry && model.telemetry.calls) {
+            var telemetry = document.createElement("div");
+            telemetry.className = model.telemetry.error_rate_pct > 0 ? "model-card__warn" : "model-card__note";
+            telemetry.textContent = model.telemetry.window_days + "d usage · " +
+              int(model.telemetry.calls) + " calls · " +
+              int(model.telemetry.avg_latency_ms) + " ms avg · " +
+              Math.round(model.telemetry.error_rate_pct) + "% errors · " +
+              money(model.telemetry.cost_usd);
+            body.appendChild(telemetry);
+          }
           if (model.check_status) {
             var check = document.createElement("div");
             check.className = model.check_status === "free_verified" ? "model-card__note" : "model-card__warn";

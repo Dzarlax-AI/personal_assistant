@@ -53,6 +53,15 @@ type uiModel struct {
 	Policy          string
 	Reasons         []string
 	Warnings        []string
+	Telemetry       modelTelemetry
+}
+
+type modelTelemetry struct {
+	Calls        int     `json:"calls"`
+	AvgLatencyMS int     `json:"avg_latency_ms"`
+	ErrorRatePct float64 `json:"error_rate_pct"`
+	CostUSD      float64 `json:"cost_usd"`
+	WindowDays   int     `json:"window_days"`
 }
 
 type uiSlotInfo struct {
@@ -318,6 +327,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			}
 		}
 		models := applyPreset(allCaps, aaModels, preset, visionFallbackPrompt)
+		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 		filters := uiFilters{
 			ActivePreset:      preset,
 			PresetDescription: p.Description,
@@ -427,6 +437,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		annotateModelForRole(&m, "", "catalog")
 		models = append(models, m)
 	}
+	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
 		var less bool
@@ -490,6 +501,42 @@ func effectiveOrNominal(m uiModel) float64 {
 		return m.EffectivePrompt
 	}
 	return m.PromptPrice
+}
+
+func (s *Server) loadModelTelemetry(ctx context.Context, provider string) map[string]modelTelemetry {
+	if s.usageStore == nil {
+		return nil
+	}
+	rows, err := s.usageStore.UsageByModel(ctx, time.Now().Add(-7*24*time.Hour), 1000)
+	if err != nil {
+		s.logger.Warn("model telemetry load failed", "err", err)
+		return nil
+	}
+	out := make(map[string]modelTelemetry, len(rows))
+	for _, row := range rows {
+		if row.Provider != provider || row.Calls <= 0 {
+			continue
+		}
+		out[row.ModelID] = modelTelemetry{
+			Calls:        row.Calls,
+			AvgLatencyMS: int(row.AvgLatencyMS + 0.5),
+			ErrorRatePct: 100 * float64(row.ErrorCount) / float64(row.Calls),
+			CostUSD:      row.CostUSD,
+			WindowDays:   7,
+		}
+	}
+	return out
+}
+
+func attachModelTelemetry(models []uiModel, telemetry map[string]modelTelemetry) {
+	if len(models) == 0 || len(telemetry) == 0 {
+		return
+	}
+	for i := range models {
+		if t, ok := telemetry[models[i].ID]; ok {
+			models[i].Telemetry = t
+		}
+	}
 }
 
 // enrichFromAA populates the AA-derived fields on a uiModel from the matched

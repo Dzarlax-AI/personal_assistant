@@ -110,11 +110,11 @@ func NewSQLite(path string) (*SQLite, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 	// Migrations for existing databases
-	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                                        //nolint:errcheck
-	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                                    //nolint:errcheck
-	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`)           //nolint:errcheck
-	db.Exec(`ALTER TABLE usage_log ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`)                 //nolint:errcheck
-	db.Exec(`ALTER TABLE usage_log ADD COLUMN turn_latency_ms INTEGER NOT NULL DEFAULT 0`)       //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN parts TEXT`)                                  //nolint:errcheck
+	db.Exec(`ALTER TABLE messages ADD COLUMN embedding BLOB`)                              //nolint:errcheck
+	db.Exec(`ALTER TABLE model_capabilities ADD COLUMN score REAL NOT NULL DEFAULT 0`)     //nolint:errcheck
+	db.Exec(`ALTER TABLE usage_log ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`)           //nolint:errcheck
+	db.Exec(`ALTER TABLE usage_log ADD COLUMN turn_latency_ms INTEGER NOT NULL DEFAULT 0`) //nolint:errcheck
 	return &SQLite{db: db}, nil
 }
 
@@ -550,11 +550,11 @@ func (s *SQLite) SearchAllSessions(chatID int64, queryEmb []float32, topK int, m
 
 	// Group into turns: user message followed by the next assistant response.
 	type turn struct {
-		date      time.Time
-		userText  string
-		botText   string
-		userEmb   []float32
-		score     float64
+		date     time.Time
+		userText string
+		botText  string
+		userEmb  []float32
+		score    float64
 	}
 	var turns []turn
 	for i := 0; i < len(all); i++ {
@@ -920,7 +920,9 @@ func (s *SQLite) UsageByModel(ctx context.Context, since time.Time, limit int) (
 		       COUNT(*),
 		       COALESCE(SUM(prompt_tokens), 0),
 		       COALESCE(SUM(completion_tokens), 0),
-		       COALESCE(SUM(cost_usd), 0) AS cost
+		       COALESCE(SUM(cost_usd), 0) AS cost,
+		       COALESCE(AVG(NULLIF(latency_ms, 0)), 0) AS avg_latency,
+		       COALESCE(SUM(CASE WHEN success THEN 0 ELSE 1 END), 0) AS errors
 		FROM usage_log WHERE ts >= ?
 		GROUP BY provider, model_id
 		ORDER BY cost DESC, 3 DESC
@@ -932,7 +934,7 @@ func (s *SQLite) UsageByModel(ctx context.Context, since time.Time, limit int) (
 	var out []llm.UsageModelRow
 	for rows.Next() {
 		var r llm.UsageModelRow
-		if err := rows.Scan(&r.Provider, &r.ModelID, &r.Calls, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Provider, &r.ModelID, &r.Calls, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD, &r.AvgLatencyMS, &r.ErrorCount); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

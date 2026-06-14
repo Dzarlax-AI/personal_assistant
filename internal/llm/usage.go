@@ -19,11 +19,11 @@ type UsageLog struct {
 	ChatID             int64
 	PromptTokens       int
 	CompletionTokens   int
-	CachedPromptTokens int // subset of PromptTokens that hit provider's prompt cache (Anthropic/OpenAI)
-	ReasoningTokens    int // for thinking-enabled models: tokens spent on internal reasoning (billed as completion but semantically distinct)
+	CachedPromptTokens int     // subset of PromptTokens that hit provider's prompt cache (Anthropic/OpenAI)
+	ReasoningTokens    int     // for thinking-enabled models: tokens spent on internal reasoning (billed as completion but semantically distinct)
 	Cost               float64 // USD, authoritative per-request cost reported by the provider (OpenRouter's usage.cost). 0 when the provider doesn't surface this.
 	LatencyMs          int
-	TurnLatencyMs      int    // end-to-end turn time (user msg → final reply); only set on the last call of the turn
+	TurnLatencyMs      int // end-to-end turn time (user msg → final reply); only set on the last call of the turn
 	Success            bool
 	ErrorClass         string // "" / "rate_limit" / "5xx" / "network" / "timeout" / "other"
 	RequestID          string // provider's request id (e.g. OpenRouter gen-xxxxx) — useful for cross-referencing with provider dashboards
@@ -92,6 +92,8 @@ type UsageModelRow struct {
 	PromptTokens     int
 	CompletionTokens int
 	CostUSD          float64
+	AvgLatencyMS     float64
+	ErrorCount       int
 }
 
 // UsageRoleRow aggregates per routing role.

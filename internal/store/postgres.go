@@ -644,7 +644,7 @@ func (p *Postgres) SearchAllSessions(chatID int64, queryEmb []float32, topK int,
 	}
 
 	type turn struct {
-		date    time.Time
+		date     time.Time
 		userText string
 		botText  string
 		userEmb  []float32
@@ -850,7 +850,9 @@ func (p *Postgres) UsageByModel(ctx context.Context, since time.Time, limit int)
 		       COUNT(*),
 		       COALESCE(SUM(prompt_tokens), 0),
 		       COALESCE(SUM(completion_tokens), 0),
-		       COALESCE(SUM(cost_usd), 0) AS cost
+		       COALESCE(SUM(cost_usd), 0) AS cost,
+		       COALESCE(AVG(NULLIF(latency_ms, 0)), 0) AS avg_latency,
+		       COALESCE(SUM(CASE WHEN success THEN 0 ELSE 1 END), 0) AS errors
 		FROM usage_log WHERE ts >= $1
 		GROUP BY provider, model_id
 		ORDER BY cost DESC, 3 DESC
@@ -862,7 +864,7 @@ func (p *Postgres) UsageByModel(ctx context.Context, since time.Time, limit int)
 	var out []llm.UsageModelRow
 	for rows.Next() {
 		var r llm.UsageModelRow
-		if err := rows.Scan(&r.Provider, &r.ModelID, &r.Calls, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Provider, &r.ModelID, &r.Calls, &r.PromptTokens, &r.CompletionTokens, &r.CostUSD, &r.AvgLatencyMS, &r.ErrorCount); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -68,6 +68,42 @@ type fakeConfigurableProvider struct {
 	caps  llm.Capabilities
 }
 
+type fakeUsageStore struct {
+	byModel []llm.UsageModelRow
+}
+
+func (f fakeUsageStore) PutUsage(context.Context, llm.UsageLog) (int64, error) {
+	return 0, nil
+}
+
+func (f fakeUsageStore) UpdateAssistantMessageID(context.Context, int64, int64) error {
+	return nil
+}
+
+func (f fakeUsageStore) UpdateTurnLatencyMs(context.Context, int64, int) error {
+	return nil
+}
+
+func (f fakeUsageStore) UsageTotals(context.Context, time.Time) (llm.UsageTotals, error) {
+	return llm.UsageTotals{}, nil
+}
+
+func (f fakeUsageStore) UsageByDay(context.Context, time.Time) ([]llm.UsageDayBucket, error) {
+	return nil, nil
+}
+
+func (f fakeUsageStore) UsageByModel(context.Context, time.Time, int) ([]llm.UsageModelRow, error) {
+	return f.byModel, nil
+}
+
+func (f fakeUsageStore) UsageByRole(context.Context, time.Time) ([]llm.UsageRoleRow, error) {
+	return nil, nil
+}
+
+func (f fakeUsageStore) ExpensiveTurns(context.Context, time.Time, int) ([]llm.ExpensiveTurn, error) {
+	return nil, nil
+}
+
 func (f *fakeConfigurableProvider) Chat(context.Context, []llm.Message, string, []llm.Tool) (llm.Response, error) {
 	return llm.Response{}, nil
 }
@@ -261,6 +297,40 @@ func TestTGAdminModelsReturnsSearchResults(t *testing.T) {
 	}
 	if len(payload.Models) != 1 || payload.Models[0].ID != "qwen/qwen3.5-plus" {
 		t.Fatalf("unexpected models: %+v", payload.Models)
+	}
+}
+
+func TestTGAdminModelsIncludesUsageTelemetry(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.usageStore = fakeUsageStore{byModel: []llm.UsageModelRow{{
+		Provider:     "openrouter",
+		ModelID:      "qwen/qwen3.5-plus",
+		Calls:        12,
+		CostUSD:      0.0345,
+		AvgLatencyMS: 830,
+		ErrorCount:   3,
+	}}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=default&q=plus", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("unexpected models: %+v", payload.Models)
+	}
+	tel := payload.Models[0].Telemetry
+	if tel.Calls != 12 || tel.AvgLatencyMS != 830 || tel.ErrorRatePct != 25 || tel.WindowDays != 7 {
+		t.Fatalf("unexpected telemetry: %+v", tel)
 	}
 }
 

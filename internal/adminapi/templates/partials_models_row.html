@@ -14,6 +14,15 @@
         {{range .Warnings}}<span>{{.}}</span> {{end}}
       </div>
       {{end}}
+      {{if gt .Telemetry.Calls 0}}
+      <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
+        7d usage:
+        {{.Telemetry.Calls}} calls
+        · {{.Telemetry.AvgLatencyMS}} ms avg
+        · {{printf "%.0f%%" .Telemetry.ErrorRatePct}} errors
+        · {{printf "$%.4f" .Telemetry.CostUSD}}
+      </div>
+      {{end}}
       <div class="assign-buttons">
         {{$prov := $.CatalogProvider}}
         {{range $.Slots}}
