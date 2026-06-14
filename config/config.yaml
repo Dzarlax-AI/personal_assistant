@@ -114,6 +114,7 @@ admin_api:
   trusted_proxy_cidrs:
     - 127.0.0.1/32
     - ::1/128
+    - 172.19.0.0/16
   base_url: https://assistant.dzarlax.dev
 
 # Artificial Analysis API — overlays Intelligence Index scores onto model capabilities.
