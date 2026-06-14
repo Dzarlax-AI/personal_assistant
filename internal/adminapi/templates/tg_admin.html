@@ -794,6 +794,7 @@
         })
           .then(function (payload) {
             text("routing-state", payload.status && payload.status.status ? payload.status.status : "Checked");
+            state.busy = false;
             return loadModels(byId("model-search").value.trim());
           })
           .catch(function (err) {
