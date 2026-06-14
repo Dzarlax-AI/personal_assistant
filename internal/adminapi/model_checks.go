@@ -188,8 +188,7 @@ func (s *Server) probeModel(ctx context.Context, providerType, modelID string, c
 
 func failedModelCheck(message string, latencyMS int64) modelCheckStatus {
 	status := "free_degraded"
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "429") || strings.Contains(lower, "rate") || strings.Contains(lower, "quota") {
+	if isBlockedModelCheckError(message) {
 		status = "free_blocked"
 	}
 	return modelCheckStatus{
@@ -198,6 +197,25 @@ func failedModelCheck(message string, latencyMS int64) modelCheckStatus {
 		LatencyMS: latencyMS,
 		Error:     message,
 	}
+}
+
+func isBlockedModelCheckError(message string) bool {
+	lower := strings.ToLower(message)
+	for _, needle := range []string{
+		"429",
+		"rate",
+		"quota",
+		"no longer available as a free model",
+		"unavailable for free",
+		"paid version is available",
+		"transitioned to a paid model",
+		"has become paid",
+	} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) startModelCheckScheduler() {

@@ -383,6 +383,26 @@ func TestTGAdminModelCheckRejectsPaidModel(t *testing.T) {
 	}
 }
 
+func TestFailedModelCheckBlocksFreeModelsThatBecamePaid(t *testing.T) {
+	cases := []string{
+		"api error (HTTP 404): This model is unavailable for free. The paid version is available now - use this slug instead: minimax/minimax-m2.5",
+		"api error (HTTP 404): Hy3 preview is no longer available as a free model. It has transitioned to a paid model.",
+	}
+	for _, message := range cases {
+		status := failedModelCheck(message, 23)
+		if status.Status != "free_blocked" {
+			t.Fatalf("status = %s, want free_blocked for %q", status.Status, message)
+		}
+	}
+}
+
+func TestFailedModelCheckKeepsTransientFailuresDegraded(t *testing.T) {
+	status := failedModelCheck("api error (HTTP 500): upstream temporarily unavailable", 91)
+	if status.Status != "free_degraded" {
+		t.Fatalf("status = %s, want free_degraded", status.Status)
+	}
+}
+
 func TestFreeModelCheckCandidatesSkipFreshChecks(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	fresh := time.Now().Add(-time.Hour).Format(time.RFC3339)
