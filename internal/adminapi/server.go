@@ -141,6 +141,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Authenticated routes.
 	authed := s.requireAuth
 	mux.Handle("/", authed(http.HandlerFunc(s.handleIndex)))
+	mux.Handle("/models/override", authed(http.HandlerFunc(s.handleModelOverride)))
 	mux.Handle("/models", authed(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/routing", authed(http.HandlerFunc(s.handleRouting)))
 	mux.Handle("/slots/", authed(http.HandlerFunc(s.handleSlotAssign))) // POST /slots/{slot}/assign

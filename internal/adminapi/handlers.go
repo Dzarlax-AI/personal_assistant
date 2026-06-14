@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -51,6 +52,7 @@ type uiModel struct {
 	Recommended     bool
 	Source          string
 	Policy          string
+	OverrideNote    string
 	Reasons         []string
 	Warnings        []string
 	Telemetry       modelTelemetry
@@ -129,6 +131,56 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		s.logger.Error("render models_content", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleModelOverride(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	provider := strings.TrimSpace(r.FormValue("provider"))
+	if provider == "" {
+		provider = "openrouter"
+	}
+	modelID := strings.TrimSpace(r.FormValue("model_id"))
+	if modelID == "" {
+		http.Error(w, "model_id required", http.StatusBadRequest)
+		return
+	}
+	state := strings.TrimSpace(r.FormValue("state"))
+	if state != "" && state != "allow" && state != "deny" {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
+	note := strings.TrimSpace(r.FormValue("note"))
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := saveModelOverride(ctx, s.settings, provider, modelID, state, note); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	next := r.Clone(r.Context())
+	next.URL = cloneURL(r.URL)
+	next.URL.RawQuery = r.Form.Encode()
+	data := s.buildIndexData(next)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewModelsContent, data); err != nil {
+		s.logger.Error("render models after override", "err", err)
+	}
+}
+
+func cloneURL(u *url.URL) *url.URL {
+	v := *u
+	return &v
 }
 
 func (s *Server) handleRouting(w http.ResponseWriter, r *http.Request) {
@@ -309,6 +361,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			aaModels = cache.Models
 		}
 	}
+	overrides := loadModelOverrides(ctx5, s.settings)
 
 	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
 	// filters are ignored on this path: the preset is a complete override.
@@ -327,6 +380,8 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			}
 		}
 		models := applyPreset(allCaps, aaModels, preset, visionFallbackPrompt)
+		models = appendAllowedOverrideCandidates(models, allCaps, aaModels, catalogProv, preset, overrides)
+		models = filterModelOverrides(models, catalogProv, overrides, true)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 		filters := uiFilters{
 			ActivePreset:      preset,
@@ -437,6 +492,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		annotateModelForRole(&m, "", "catalog")
 		models = append(models, m)
 	}
+	models = filterModelOverrides(models, catalogProv, overrides, f.Search == "")
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {

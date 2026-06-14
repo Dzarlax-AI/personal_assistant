@@ -76,6 +76,7 @@ type tgAdminModel struct {
 	Current         bool           `json:"current"`
 	Source          string         `json:"source,omitempty"`
 	Policy          string         `json:"policy,omitempty"`
+	OverrideNote    string         `json:"override_note,omitempty"`
 	Reasons         []string       `json:"reasons,omitempty"`
 	Warnings        []string       `json:"warnings,omitempty"`
 	Telemetry       modelTelemetry `json:"telemetry,omitempty"`
@@ -411,6 +412,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 	var models []uiModel
 	recommendedMode := false
 	checks := s.loadModelChecks(ctx5)
+	overrides := loadModelOverrides(ctx5, s.settings)
 	if query == "" && provider == "openrouter" {
 		var visionFallbackPrompt float64
 		cfg := s.router.GetConfig()
@@ -427,12 +429,14 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 			resp.Description = p.Description
 		}
 		models = appendFreeCandidates(models, tgAdminBrowseModels(allCaps, aaModels, ":free", role), role)
+		models = appendAllowedOverrideCandidates(models, allCaps, aaModels, provider, role, overrides)
 		recommendedMode = hasRecommendedModel(models)
 	}
 	if len(models) == 0 {
 		models = tgAdminBrowseModels(allCaps, aaModels, query, role)
 	}
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, provider))
+	models = filterModelOverrides(models, provider, overrides, true)
 	models = filterBlockedFreeModels(models, provider, checks)
 	resp.Recommended = recommendedMode
 	if len(models) > limit {
@@ -596,6 +600,7 @@ func tgModelFromUI(provider string, m uiModel, current string, checks map[string
 		Current:         m.ID == current,
 		Source:          m.Source,
 		Policy:          m.Policy,
+		OverrideNote:    m.OverrideNote,
 		Reasons:         m.Reasons,
 		Warnings:        m.Warnings,
 		Telemetry:       m.Telemetry,

@@ -23,6 +23,30 @@
         · {{printf "$%.4f" .Telemetry.CostUSD}}
       </div>
       {{end}}
+      <div style="display:flex;gap:0.35rem;align-items:center;margin-top:0.45rem;flex-wrap:wrap;">
+        <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note"
+               style="width:12rem;min-width:9rem;font-size:0.8rem;">
+        <button class="btn btn--small btn--ghost"
+                hx-post="/models/override"
+                hx-include="#models-filters, closest tr"
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":"allow"}'
+                hx-target="#models-content"
+                hx-swap="outerHTML">Allow</button>
+        <button class="btn btn--small btn--ghost"
+                hx-post="/models/override"
+                hx-include="#models-filters, closest tr"
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":"deny"}'
+                hx-target="#models-content"
+                hx-swap="outerHTML">Deny</button>
+        {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
+        <button class="btn btn--small btn--ghost"
+                hx-post="/models/override"
+                hx-include="#models-filters, closest tr"
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":""}'
+                hx-target="#models-content"
+                hx-swap="outerHTML">Clear</button>
+        {{end}}
+      </div>
       <div class="assign-buttons">
         {{$prov := $.CatalogProvider}}
         {{range $.Slots}}

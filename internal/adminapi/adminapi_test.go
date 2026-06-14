@@ -467,6 +467,72 @@ func TestTGAdminRecommendedModelsHideBlockedFreeCandidates(t *testing.T) {
 	}
 }
 
+func TestTGAdminModelsHideManualDeniedModels(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	overrides := map[string]modelOverride{
+		modelCheckKey("openrouter", "qwen/qwen3.5-plus"): {State: "deny", Note: "too costly"},
+	}
+	data, err := json.Marshal(overrides)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelOverrides: string(data)}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=default&q=plus", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 0 {
+		t.Fatalf("manual denied model should be hidden: %+v", payload.Models)
+	}
+}
+
+func TestTGAdminRecommendedModelsIncludeManualAllowedModel(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	overrides := map[string]modelOverride{
+		modelCheckKey("openrouter", "qwen/qwen3.5-plus"): {State: "allow", Note: "known good"},
+	}
+	data, err := json.Marshal(overrides)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelOverrides: string(data)}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=simple", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range payload.Models {
+		if model.ID == "qwen/qwen3.5-plus" {
+			if model.Policy != "manual_allow" || model.OverrideNote != "known good" {
+				t.Fatalf("unexpected manual allow model: %+v", model)
+			}
+			return
+		}
+	}
+	t.Fatalf("manual allowed model missing: %+v", payload.Models)
+}
+
 func TestTGAdminModelCheckPersistsFreeModelStatus(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	s.cfgRef.Telegram.BotToken = "123:abc"
