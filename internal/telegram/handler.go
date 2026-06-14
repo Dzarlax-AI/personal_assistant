@@ -781,6 +781,7 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 				"/model list — available models\n"+
 				"/model <name> — switch model\n"+
 				"/model reset — back to auto\\-routing\n"+
+				"/admin — open admin Mini App\n"+
 				"/claude <question> — enter Claude mode\n"+
 				"/exit — exit Claude mode\n"+
 				"/tools — list MCP tools\n"+
@@ -857,6 +858,8 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 		msg.ParseMode = tgbotapi.ModeMarkdownV2
 		msg.ReplyMarkup = routingMenuKeyboard(cfg, h.adminBaseURL)
 		h.bot.Send(msg) //nolint:errcheck
+	case "admin":
+		h.handleAdminCommand(chatID)
 	case "tools":
 		h.handleToolsCommand(chatID)
 	case "mcp":
@@ -866,6 +869,17 @@ func (h *Handler) handleCommand(msg *tgbotapi.Message) {
 	default:
 		h.send(chatID, "Unknown command\\. /help for help\\.")
 	}
+}
+
+func (h *Handler) handleAdminCommand(chatID int64) {
+	if strings.TrimSpace(h.adminBaseURL) == "" {
+		h.send(chatID, "Admin UI is not configured\\.")
+		return
+	}
+	adminURL := strings.TrimRight(h.adminBaseURL, "/") + "/tg-admin"
+	msg := tgbotapi.NewMessage(chatID, "Assistant admin")
+	msg.ReplyMarkup = adminMiniAppKeyboard(adminURL)
+	h.bot.Send(msg) //nolint:errcheck
 }
 
 var downloadHTTPClient = &http.Client{Timeout: downloadTimeout}
@@ -1184,6 +1198,36 @@ func (h *Handler) sendTypingLoop(chatID int64, ctx context.Context) {
 
 // --- Routing inline keyboard ---
 
+type webAppInfo struct {
+	URL string `json:"url"`
+}
+
+type webAppInlineKeyboardButton struct {
+	Text   string      `json:"text"`
+	WebApp *webAppInfo `json:"web_app,omitempty"`
+	URL    string      `json:"url,omitempty"`
+}
+
+type webAppInlineKeyboardMarkup struct {
+	InlineKeyboard [][]webAppInlineKeyboardButton `json:"inline_keyboard"`
+}
+
+func adminMiniAppKeyboard(adminURL string) webAppInlineKeyboardMarkup {
+	return webAppInlineKeyboardMarkup{
+		InlineKeyboard: [][]webAppInlineKeyboardButton{{
+			{
+				Text:   "Open Admin",
+				WebApp: &webAppInfo{URL: adminURL},
+			},
+		}, {
+			{
+				Text: "Open in browser",
+				URL:  adminURL,
+			},
+		}},
+	}
+}
+
 func routingMenuText(cfg llm.RouterConfig) string {
 	classifierStatus := "off"
 	if cfg.ClassifierMinLen > 0 {
@@ -1407,6 +1451,7 @@ func registerCommands(bot *tgbotapi.BotAPI) error {
 		{Command: "claude", Description: "Enter Claude mode (heavy tasks)"},
 		{Command: "exit", Description: "Exit Claude mode, back to auto-routing"},
 		{Command: "routing", Description: "Configure routing (inline UI)"},
+		{Command: "admin", Description: "Open admin Mini App"},
 		{Command: "tools", Description: "List connected MCP tools"},
 		{Command: "mcp", Description: "MCP management (update/reload)"},
 		{Command: "stats", Description: "Show history size, model, last compact"},

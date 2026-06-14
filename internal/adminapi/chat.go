@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"html"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -144,10 +146,10 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if v.Role == "break" {
 			sb.WriteString(`<div class="divider--labeled"><span class="divider__label">`)
-			sb.WriteString(v.BreakDate)
+			sb.WriteString(html.EscapeString(v.BreakDate))
 			if v.Body != "" {
 				sb.WriteString(" &middot; ")
-				sb.WriteString(v.Body)
+				sb.WriteString(html.EscapeString(v.Body))
 			}
 			sb.WriteString(`</span></div>`)
 		} else {
@@ -165,19 +167,22 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 			}
 			if v.Time != "" {
 				sb.WriteString(" &middot; ")
-				sb.WriteString(v.Time)
+				sb.WriteString(html.EscapeString(v.Time))
 			}
 			sb.WriteString(`</div>`)
 			if len(v.ImageURLs) > 0 {
 				sb.WriteString(`<div class="chat-msg__body">`)
 				for _, u := range v.ImageURLs {
+					if !safeImageURL(u) {
+						continue
+					}
 					sb.WriteString(`<img src="`)
-					sb.WriteString(u)
+					sb.WriteString(htmlEscapeAttr(u))
 					sb.WriteString(`" alt="attachment">`)
 				}
 				if v.Body != "" {
 					sb.WriteString(`<div>`)
-					sb.WriteString(v.Body)
+					sb.WriteString(html.EscapeString(v.Body))
 					sb.WriteString(`</div>`)
 				}
 				sb.WriteString(`</div>`)
@@ -188,7 +193,7 @@ func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {
 				sb.WriteString(`"></div>`)
 			} else {
 				sb.WriteString(`<div class="chat-msg__body">`)
-				sb.WriteString(v.Body)
+				sb.WriteString(html.EscapeString(v.Body))
 				sb.WriteString(`</div>`)
 			}
 			sb.WriteString(`</div>`)
@@ -221,6 +226,21 @@ func itemToView(it store.HistoryItem) *chatMsgView {
 		v.Time = it.CreatedAt.Local().Format("15:04")
 	}
 	return v
+}
+
+func safeImageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return u.Host != ""
+	case "data":
+		return strings.HasPrefix(strings.ToLower(raw), "data:image/")
+	default:
+		return false
+	}
 }
 
 func htmlEscapeAttr(s string) string {

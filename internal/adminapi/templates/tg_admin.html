@@ -1,0 +1,422 @@
+{{define "tg_admin"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assistant Admin</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: var(--tg-theme-bg-color, #f6f7f9);
+      --text: var(--tg-theme-text-color, #15171a);
+      --muted: var(--tg-theme-hint-color, #667085);
+      --card: var(--tg-theme-secondary-bg-color, #ffffff);
+      --accent: var(--tg-theme-button-color, #2481cc);
+      --accent-text: var(--tg-theme-button-text-color, #ffffff);
+      --border: color-mix(in srgb, var(--muted) 24%, transparent);
+      --ok: #168a4a;
+      --warn: #b15c00;
+      --bad: #ba1a1a;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1.4;
+    }
+
+    .shell {
+      width: min(760px, 100%);
+      margin: 0 auto;
+      padding: 16px 14px 88px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 22px; line-height: 1.15; letter-spacing: 0; }
+    h2 { font-size: 15px; letter-spacing: 0; }
+
+    .subtle { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--ok);
+      background: color-mix(in srgb, var(--ok) 10%, var(--card));
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+
+    .card__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--card) 82%, var(--bg));
+    }
+
+    .metric__label { color: var(--muted); font-size: 11px; text-transform: uppercase; }
+    .metric__value { margin-top: 4px; font-size: 18px; font-weight: 750; overflow-wrap: anywhere; }
+
+    .route, .mcp-row {
+      display: grid;
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+    }
+    .route:first-child, .mcp-row:first-child { border-top: 0; padding-top: 0; }
+    .route:last-child, .mcp-row:last-child { padding-bottom: 0; }
+
+    .route__meta, .mcp-row {
+      grid-template-columns: minmax(86px, 0.8fr) minmax(0, 1.5fr) auto;
+      align-items: center;
+    }
+
+    .label { font-weight: 700; }
+    .value { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+
+    select, button {
+      min-height: 38px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font: inherit;
+    }
+
+    select {
+      width: 100%;
+      padding: 0 10px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button {
+      padding: 0 12px;
+      background: var(--accent);
+      color: var(--accent-text);
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+    }
+
+    button:disabled, select:disabled { opacity: 0.58; cursor: wait; }
+
+    .status-text { color: var(--muted); font-size: 13px; }
+    .error { color: var(--bad); }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+
+    .actions {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+      background: color-mix(in srgb, var(--card) 92%, transparent);
+      border-top: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+    }
+
+    .actions__inner {
+      width: min(760px, 100%);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+    }
+
+    @media (max-width: 480px) {
+      .metric-grid { grid-template-columns: 1fr; }
+      .route__meta, .mcp-row { grid-template-columns: 1fr; }
+      .actions__inner { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <h1>Assistant Admin</h1>
+        <p class="subtle" id="updated">Waiting for Telegram session</p>
+      </div>
+      <span class="pill" id="health-pill">loading</span>
+    </header>
+
+    <section class="grid" aria-live="polite">
+      <article class="card">
+        <div class="card__head">
+          <h2>Bot Status</h2>
+          <span class="status-text" id="bot-state">Checking</span>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric__label">Current model</div>
+            <div class="metric__value" id="model">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">MCP servers</div>
+            <div class="metric__value" id="mcp-count">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">24h calls</div>
+            <div class="metric__value" id="calls-24h">-</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <h2>Routing</h2>
+          <span class="status-text" id="routing-state">Live</span>
+        </div>
+        <div id="routing-list"></div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <h2>Usage</h2>
+          <span class="status-text">OpenRouter cost when available</span>
+        </div>
+        <div class="metric-grid">
+          <div class="metric">
+            <div class="metric__label">24h cost</div>
+            <div class="metric__value" id="cost-24h">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">24h tokens</div>
+            <div class="metric__value" id="tokens-24h">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric__label">7d calls</div>
+            <div class="metric__value" id="calls-7d">-</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <h2>MCP Health</h2>
+          <span class="status-text" id="mcp-state">Configured</span>
+        </div>
+        <div id="mcp-list"></div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="actions">
+    <div class="actions__inner">
+      <button type="button" id="open-full">Open full admin</button>
+      <button type="button" class="secondary" id="refresh">Refresh</button>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+
+      var initData = tg && tg.initData ? tg.initData : "";
+      var fullAdminURL = "{{.FullAdminURL}}";
+      var state = { summary: null, busy: false };
+
+      function byId(id) { return document.getElementById(id); }
+      function text(id, value) { byId(id).textContent = value == null || value === "" ? "-" : String(value); }
+      function money(value) { return "$" + Number(value || 0).toFixed(4); }
+      function int(value) { return Number(value || 0).toLocaleString(); }
+
+      function setHealth(label, className) {
+        var pill = byId("health-pill");
+        pill.textContent = label;
+        pill.className = "pill " + (className || "");
+      }
+
+      function request(path, options) {
+        options = options || {};
+        options.headers = Object.assign({
+          "X-Telegram-Init-Data": initData
+        }, options.headers || {});
+        return fetch(path, options).then(function (resp) {
+          if (!resp.ok) throw new Error(resp.status + " " + resp.statusText);
+          return resp.json();
+        });
+      }
+
+      function renderRouting(routes) {
+        var root = byId("routing-list");
+        root.textContent = "";
+        (routes || []).forEach(function (route) {
+          var row = document.createElement("div");
+          row.className = "route route__meta";
+
+          var label = document.createElement("div");
+          label.className = "label";
+          label.textContent = route.role;
+
+          var model = document.createElement("div");
+          model.className = "value";
+          model.textContent = route.model + (route.provider ? " · " + route.provider : "");
+
+          var select = document.createElement("select");
+          (route.available || []).forEach(function (slot) {
+            var option = document.createElement("option");
+            option.value = slot;
+            option.textContent = slot;
+            option.selected = slot === route.slot;
+            select.appendChild(option);
+          });
+          select.addEventListener("change", function () {
+            setRoute(route.role, select.value);
+          });
+
+          row.appendChild(label);
+          row.appendChild(model);
+          row.appendChild(select);
+          root.appendChild(row);
+        });
+        if (!routes || routes.length === 0) {
+          root.textContent = "Routing is not available.";
+        }
+      }
+
+      function renderMCP(servers) {
+        var root = byId("mcp-list");
+        root.textContent = "";
+        (servers || []).forEach(function (server) {
+          var row = document.createElement("div");
+          row.className = "mcp-row";
+          var name = document.createElement("div");
+          name.className = "label";
+          name.textContent = server.name;
+          var type = document.createElement("div");
+          type.className = "value";
+          type.textContent = server.type || "http";
+          var status = document.createElement("div");
+          status.className = "status-text " + (server.status === "configured" ? "ok" : "warn");
+          status.textContent = server.status;
+          row.appendChild(name);
+          row.appendChild(type);
+          row.appendChild(status);
+          root.appendChild(row);
+        });
+        if (!servers || servers.length === 0) {
+          root.textContent = "No MCP servers configured.";
+        }
+      }
+
+      function render(summary) {
+        state.summary = summary;
+        text("updated", "Updated " + new Date(summary.updated_at).toLocaleString());
+        text("bot-state", summary.status && summary.status.bot);
+        text("model", summary.status && summary.status.model);
+        text("mcp-count", summary.status && summary.status.mcp_count);
+        text("calls-24h", int(summary.usage && summary.usage.calls_24h));
+        text("cost-24h", money(summary.usage && summary.usage.cost_24h));
+        text("tokens-24h", int(summary.usage && summary.usage.tokens_24h));
+        text("calls-7d", int(summary.usage && summary.usage.calls_7d));
+        renderRouting(summary.routing);
+        renderMCP(summary.mcp);
+        setHealth("online", "ok");
+      }
+
+      function load() {
+        if (!initData) {
+          setHealth("telegram only", "warn");
+          text("updated", "Open this page from the bot in Telegram");
+          return Promise.resolve();
+        }
+        byId("refresh").disabled = true;
+        return request("/tg-admin/api/summary")
+          .then(render)
+          .catch(function (err) {
+            setHealth("auth error", "error");
+            text("updated", err.message);
+          })
+          .finally(function () {
+            byId("refresh").disabled = false;
+          });
+      }
+
+      function setRoute(role, slot) {
+        if (state.busy) return;
+        state.busy = true;
+        text("routing-state", "Saving");
+        request("/tg-admin/api/routing", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: role, slot: slot })
+        })
+          .then(render)
+          .then(function () { text("routing-state", "Saved"); })
+          .catch(function (err) {
+            text("routing-state", err.message);
+            load();
+          })
+          .finally(function () {
+            state.busy = false;
+          });
+      }
+
+      byId("refresh").addEventListener("click", load);
+      byId("open-full").addEventListener("click", function () {
+        var target = fullAdminURL || "/";
+        if (tg && tg.openLink && /^https?:\/\//.test(target)) tg.openLink(target);
+        else window.location.href = target;
+      });
+
+      load();
+    }());
+  </script>
+</body>
+</html>
+{{end}}

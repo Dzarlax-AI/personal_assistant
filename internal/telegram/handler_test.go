@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -27,5 +28,19 @@ func TestRedactTelegramToken(t *testing.T) {
 	}
 	if !strings.Contains(got, "bot<redacted>/getUpdates") {
 		t.Fatalf("redacted URL shape not preserved: %s", got)
+	}
+}
+
+func TestAdminMiniAppKeyboardSerializesWebAppButton(t *testing.T) {
+	data, err := json.Marshal(adminMiniAppKeyboard("https://assistant.example/tg-admin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"web_app":{"url":"https://assistant.example/tg-admin"}`) {
+		t.Fatalf("web_app button missing: %s", got)
+	}
+	if !strings.Contains(got, `"url":"https://assistant.example/tg-admin"`) {
+		t.Fatalf("browser fallback URL missing: %s", got)
 	}
 }

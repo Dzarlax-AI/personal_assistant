@@ -2,14 +2,25 @@ package adminapi
 
 import (
 	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"telegram-agent/internal/config"
 	"telegram-agent/internal/llm"
+	"telegram-agent/internal/store"
 )
 
 func newTestServer(t *testing.T) *Server {
@@ -48,6 +59,7 @@ func TestTemplatesParse(t *testing.T) {
 		viewIndex:         data,
 		viewRouting:       data.Routing, // routing view takes uiRouting directly
 		viewModelsBrowser: data,
+		viewTGAdmin:       tgAdminData{FullAdminURL: "https://assistant.example/admin"},
 	}
 	for v, d := range cases {
 		t.Run(v, func(t *testing.T) {
@@ -59,6 +71,105 @@ func TestTemplatesParse(t *testing.T) {
 				t.Errorf("view %s rendered empty", v)
 			}
 		})
+	}
+}
+
+func signedTGInitData(t *testing.T, token string, userID int64, authTime time.Time) string {
+	t.Helper()
+	userJSON, err := json.Marshal(tgAdminUser{ID: userID, FirstName: "Alex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := url.Values{}
+	values.Set("auth_date", strconv.FormatInt(authTime.Unix(), 10))
+	values.Set("query_id", "AAEAAAE")
+	values.Set("user", string(userJSON))
+
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+values.Get(k))
+	}
+
+	secretMAC := hmac.New(sha256.New, []byte("WebAppData"))
+	_, _ = secretMAC.Write([]byte(token))
+	secret := secretMAC.Sum(nil)
+
+	hashMAC := hmac.New(sha256.New, secret)
+	_, _ = hashMAC.Write([]byte(strings.Join(parts, "\n")))
+	values.Set("hash", hex.EncodeToString(hashMAC.Sum(nil)))
+	return values.Encode()
+}
+
+func TestValidateTGInitDataAcceptsOwnerSignedData(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	now := time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC)
+
+	user, err := s.validateTGInitData(signedTGInitData(t, "123:abc", 42, now), now)
+	if err != nil {
+		t.Fatalf("validateTGInitData: %v", err)
+	}
+	if user.ID != 42 {
+		t.Fatalf("user id = %d, want 42", user.ID)
+	}
+}
+
+func TestTGAdminAPIRejectsInvalidAuth(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/summary", nil)
+	req.Header.Set("X-Telegram-Init-Data", "auth_date=1&user={}&hash=bad")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestTGAdminAPIAcceptsOwner(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	now := time.Now()
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/summary", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, now))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status.Bot != "running" {
+		t.Fatalf("bot status = %q", payload.Status.Bot)
+	}
+}
+
+func TestTGAdminAPIRejectsNonOwner(t *testing.T) {
+	s := newTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	now := time.Now()
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/summary", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 99, now))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
 
@@ -211,5 +322,93 @@ func TestHealthz(t *testing.T) {
 	n, _ := resp.Body.Read(body)
 	if !strings.Contains(string(body[:n]), `"ok":true`) {
 		t.Errorf("healthz body: %s", string(body[:n]))
+	}
+}
+
+type fakeChatAgent struct {
+	history []store.HistoryItem
+}
+
+func (f *fakeChatAgent) Process(context.Context, int64, llm.Message, func(string)) (string, error) {
+	return "", nil
+}
+
+func (f *fakeChatAgent) ProcessStream(context.Context, int64, llm.Message, func(string), func(string)) (string, error) {
+	return "", nil
+}
+
+func (f *fakeChatAgent) GetChatHistory(int64) []llm.Message { return nil }
+
+func (f *fakeChatAgent) GetDisplayHistory(_ int64, limit, offset int) []store.HistoryItem {
+	if offset >= len(f.history) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(f.history) {
+		end = len(f.history)
+	}
+	return f.history[offset:end]
+}
+
+func (f *fakeChatAgent) ClearChatHistory(int64) {}
+
+func (f *fakeChatAgent) PopLastUserTurn(int64) (string, bool) { return "", false }
+
+func TestChatInitialAssistantUsesBotClassAndNoRequiredTextarea(t *testing.T) {
+	s := newTestServer(t)
+	s.SetAgent(&fakeChatAgent{history: []store.HistoryItem{{
+		Role:      "assistant",
+		Content:   "hello",
+		CreatedAt: time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC),
+	}}})
+
+	req := httptest.NewRequest(http.MethodGet, "/chat", nil)
+	rec := httptest.NewRecorder()
+	s.handleChat(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `chat-msg chat-msg--bot`) {
+		t.Fatalf("assistant bubble should use bot class, body:\n%s", body)
+	}
+	if strings.Contains(body, `chat-msg--assistant`) {
+		t.Fatalf("assistant class leaked into initial chat render:\n%s", body)
+	}
+	if strings.Contains(body, "required></textarea>") {
+		t.Fatal("chat textarea should not be marked required; image-only submits must be allowed")
+	}
+}
+
+func TestChatHistoryEscapesLazyLoadedMessages(t *testing.T) {
+	s := newTestServer(t)
+	s.SetAgent(&fakeChatAgent{history: []store.HistoryItem{{
+		Role:      "user",
+		Content:   `<img src=x onerror=alert(1)>`,
+		ImageURLs: []string{`x" onerror="alert(2)`},
+		CreatedAt: time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC),
+	}}})
+
+	req := httptest.NewRequest(http.MethodGet, "/chat/history?offset=0", nil)
+	rec := httptest.NewRecorder()
+	s.handleChatHistory(rec, req)
+
+	resp := rec.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	html, _ := payload["html"].(string)
+	if strings.Contains(html, `<img src=x`) || strings.Contains(html, `src="x&quot; onerror`) {
+		t.Fatalf("lazy history response contains unsafe HTML: %s", html)
+	}
+	if !strings.Contains(html, `&lt;img src=x onerror=alert(1)&gt;`) {
+		t.Fatalf("lazy history did not preserve escaped user text: %s", html)
 	}
 }

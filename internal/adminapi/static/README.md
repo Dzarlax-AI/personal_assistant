@@ -17,3 +17,6 @@ design system `@main`.
 
 Do **not** commit real builds of `dzarlax.css`, `dzarlax.js`, or
 `htmx.min.js` — they bloat diffs and go stale.
+
+`marked.min.js` is intentionally committed as a small local runtime asset so
+the Chat tab does not depend on a browser-time CDN request.

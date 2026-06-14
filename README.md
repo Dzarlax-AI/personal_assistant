@@ -433,8 +433,19 @@ Deployment recipe (behind Traefik + Authentik):
 # docker-compose.yml
 labels:
   - "traefik.enable=true"
+  # Telegram Mini App: public at the proxy layer, protected by Telegram initData
+  # HMAC + TELEGRAM_OWNER_CHAT_ID inside the Go service.
+  - "traefik.http.routers.assistant-tg-admin.entrypoints=https"
+  - "traefik.http.routers.assistant-tg-admin.rule=Host(`assistant.example.com`) && PathPrefix(`/tg-admin`)"
+  - "traefik.http.routers.assistant-tg-admin.priority=100"
+  - "traefik.http.routers.assistant-tg-admin.tls=true"
+  - "traefik.http.routers.assistant-tg-admin.tls.certresolver=letsEncrypt"
+  - "traefik.http.routers.assistant-tg-admin.service=assistant-admin"
+
+  # Full web admin: keep Authentik/forward-auth protection.
   - "traefik.http.routers.assistant-admin.entrypoints=https"
   - "traefik.http.routers.assistant-admin.rule=Host(`assistant.example.com`)"
+  - "traefik.http.routers.assistant-admin.priority=10"
   - "traefik.http.routers.assistant-admin.tls=true"
   - "traefik.http.routers.assistant-admin.tls.certresolver=letsEncrypt"
   - "traefik.http.routers.assistant-admin.middlewares=authentik-auth"

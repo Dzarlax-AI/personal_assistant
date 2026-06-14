@@ -116,6 +116,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		w.Write([]byte(`{"ok":true}`)) //nolint:errcheck
 	})
 
+	// Telegram Mini App shell + Telegram init-data protected API.
+	mux.Handle("/tg-admin", http.HandlerFunc(s.handleTGAdmin))
+	mux.Handle("/tg-admin/", http.HandlerFunc(s.handleTGAdminRouter))
+
 	// Authenticated routes.
 	authed := s.requireAuth
 	mux.Handle("/", authed(http.HandlerFunc(s.handleIndex)))

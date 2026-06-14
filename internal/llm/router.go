@@ -733,6 +733,8 @@ func (r *Router) LastRouted() string {
 
 // ProviderNames returns sorted list of all available provider names.
 func (r *Router) ProviderNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.providers))
 	for k := range r.providers {
 		names = append(names, k)
