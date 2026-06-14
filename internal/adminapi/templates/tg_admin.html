@@ -372,7 +372,12 @@
           <button type="button" class="ghost" id="show-tools">Tools</button>
           <button type="button" class="secondary" id="compact-history">Compact</button>
           <button type="button" class="secondary" id="reload-mcp">Reload MCP</button>
+          <button type="button" class="secondary" id="run-model-checks">Check models</button>
           <button type="button" class="danger" id="clear-context">Clear context</button>
+        </div>
+        <div class="panel-row">
+          <div class="label">Free model checks</div>
+          <div class="value" id="model-checks">-</div>
         </div>
         <div class="panel-list" id="stats-panel"></div>
         <div class="panel-list" id="tools-panel"></div>
@@ -726,6 +731,12 @@
         text("cost-24h", money(summary.usage && summary.usage.cost_24h));
         text("tokens-24h", int(summary.usage && summary.usage.tokens_24h));
         text("calls-7d", int(summary.usage && summary.usage.calls_7d));
+        var checks = summary.model_checks || {};
+        text("model-checks",
+          int(checks.verified) + " verified · " +
+          int(checks.degraded) + " degraded · " +
+          int(checks.blocked) + " blocked · " +
+          int(checks.unverified) + " unverified");
         renderRouting(summary.routing);
         renderMCP(summary.mcp);
         setHealth("online", "ok");
@@ -834,6 +845,25 @@
         });
       }
 
+      function runModelChecks() {
+        if (state.busy) return;
+        confirmAction("Run stale free model checks now?", function () {
+          state.busy = true;
+          text("ops-state", "Checking models");
+          request("/tg-admin/api/model-checks/run", { method: "POST" })
+            .then(function (payload) {
+              text("ops-state", "Checked " + int(payload.checked) + " models");
+              return load();
+            })
+            .catch(function (err) {
+              text("ops-state", err.message);
+            })
+            .finally(function () {
+              state.busy = false;
+            });
+        });
+      }
+
       byId("refresh").addEventListener("click", load);
       byId("show-stats").addEventListener("click", loadStats);
       byId("show-tools").addEventListener("click", loadTools);
@@ -843,6 +873,7 @@
       byId("reload-mcp").addEventListener("click", function () {
         runOperation("mcp_reload", "Reload MCP servers now?");
       });
+      byId("run-model-checks").addEventListener("click", runModelChecks);
       byId("clear-context").addEventListener("click", function () {
         runOperation("clear", "Clear the current conversation context? This cannot be undone.");
       });

@@ -1021,6 +1021,34 @@ func (s *Server) settingSpecs() []settingSpec {
 			Default:     boolDefault(s.cfgRef.AdminAPI.TrustForwardAuth),
 			InputType:   "text",
 		},
+		{
+			Key:         SettingKeyModelCheckIntervalHours,
+			Label:       "Free model check interval (hours)",
+			Description: "How often the background scheduler checks stale free OpenRouter models. Applies on the next scheduler cycle.",
+			Default:     fmt.Sprintf("%d", defaultModelCheckIntervalHours),
+			InputType:   "number",
+		},
+		{
+			Key:         SettingKeyModelCheckInitialDelayMins,
+			Label:       "Free model check initial delay (minutes)",
+			Description: "Delay after admin API start before the first background free-model sweep.",
+			Default:     fmt.Sprintf("%d", defaultModelCheckInitialDelayMins),
+			InputType:   "number",
+		},
+		{
+			Key:         SettingKeyModelCheckStaleHours,
+			Label:       "Free model check TTL (hours)",
+			Description: "A free-model check older than this is considered stale and eligible for recheck.",
+			Default:     fmt.Sprintf("%d", defaultModelCheckStaleHours),
+			InputType:   "number",
+		},
+		{
+			Key:         SettingKeyModelCheckBatchLimit,
+			Label:       "Free model check batch limit",
+			Description: "Maximum number of stale free models to check per scheduler run.",
+			Default:     fmt.Sprintf("%d", defaultModelCheckBatchLimit),
+			InputType:   "number",
+		},
 	}
 	if s.settings != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

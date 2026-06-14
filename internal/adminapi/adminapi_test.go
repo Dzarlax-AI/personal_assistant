@@ -420,6 +420,72 @@ func TestFreeModelCheckCandidatesSkipFreshChecks(t *testing.T) {
 	}
 }
 
+func TestSettingSpecsIncludeModelCheckControls(t *testing.T) {
+	s := newTestServer(t)
+	keys := map[string]bool{}
+	for _, spec := range s.settingSpecs() {
+		keys[spec.Key] = true
+	}
+	for _, key := range []string{
+		SettingKeyModelCheckIntervalHours,
+		SettingKeyModelCheckInitialDelayMins,
+		SettingKeyModelCheckStaleHours,
+		SettingKeyModelCheckBatchLimit,
+	} {
+		if !keys[key] {
+			t.Fatalf("setting %s is not exposed", key)
+		}
+	}
+}
+
+func TestTGAdminSummaryIncludesModelCheckCounts(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "verified:free"): {Status: "free_verified", CheckedAt: time.Now().Format(time.RFC3339)},
+		modelCheckKey("openrouter", "blocked:free"):  {Status: "free_blocked", CheckedAt: time.Now().Format(time.RFC3339)},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	summary := s.buildTGAdminSummary(context.Background())
+	if summary.ModelChecks.Total != 2 || summary.ModelChecks.Verified != 1 || summary.ModelChecks.Blocked != 1 {
+		t.Fatalf("unexpected model check summary: %+v", summary.ModelChecks)
+	}
+}
+
+func TestTGAdminRunModelChecksRunsSweep(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.settings = &fakeSettingsStore{values: map[string]string{}}
+	s.modelProbe = func(context.Context, string, string, llm.Capabilities) modelCheckStatus {
+		return modelCheckStatus{Status: "free_verified", CheckedAt: time.Now().Format(time.RFC3339), LatencyMS: 10}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model-checks/run", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload modelCheckSweepResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Checked != 1 || payload.Statuses["free_verified"] != 1 {
+		t.Fatalf("unexpected sweep result: %+v", payload)
+	}
+	check := s.modelCheckStatus(context.Background(), "openrouter", "qwen/qwen3.5-flash:free")
+	if check.Status != "free_verified" {
+		t.Fatalf("check not persisted: %+v", check)
+	}
+}
+
 func TestTGAdminModelSetUpdatesCurrentRoleSlot(t *testing.T) {
 	s, provider := newTGModelTestServer(t)
 	s.cfgRef.Telegram.BotToken = "123:abc"

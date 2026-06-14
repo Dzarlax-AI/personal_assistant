@@ -38,6 +38,7 @@ type tgAdminSummary struct {
 	Routing      []tgAdminRoute     `json:"routing"`
 	Usage        tgAdminUsage       `json:"usage"`
 	MCP          []tgAdminMCPServer `json:"mcp"`
+	ModelChecks  modelCheckSummary  `json:"model_checks"`
 	FullAdminURL string             `json:"full_admin_url"`
 }
 
@@ -157,6 +158,8 @@ func (s *Server) handleTGAdminRouter(w http.ResponseWriter, r *http.Request) {
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminTools)).ServeHTTP(w, r)
 	case "/tg-admin/api/action":
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminAction)).ServeHTTP(w, r)
+	case "/tg-admin/api/model-checks/run":
+		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminModelChecksRun)).ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -255,6 +258,7 @@ func (s *Server) buildTGAdminSummary(ctx context.Context) tgAdminSummary {
 		Routing:      s.buildTGAdminRouting(),
 		Usage:        s.buildTGAdminUsage(ctx),
 		MCP:          buildTGAdminMCP(servers),
+		ModelChecks:  s.buildModelCheckSummary(ctx),
 		FullAdminURL: s.cfg.BaseURL,
 	}
 }
@@ -627,6 +631,21 @@ func (s *Server) handleTGAdminModelCheck(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, modelCheckResponse{OK: status.Status == "free_verified", Model: req.ModelID, Status: status})
+}
+
+func (s *Server) handleTGAdminModelChecksRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.settings == nil || s.capStore == nil {
+		http.Error(w, "model checks unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	result := s.runModelCheckSweep(ctx)
+	writeJSON(w, result)
 }
 
 func (s *Server) handleTGAdminModelSet(w http.ResponseWriter, r *http.Request) {
