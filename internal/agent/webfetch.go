@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +26,15 @@ const (
 	webFetchMaxChars = 8000
 )
 
-var webFetchHTTPClient = &http.Client{Timeout: webFetchTimeout}
+var (
+	webFetchResolver   = net.DefaultResolver
+	webFetchHTTPClient = &http.Client{
+		Timeout: webFetchTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return validateWebFetchURL(req.Context(), req.URL.String())
+		},
+	}
+)
 
 // WebFetchConfig holds configuration for the web_fetch tool.
 // CDPURL is optional; when empty only the HTTP+readability path is used.
@@ -60,9 +69,8 @@ func (a *Agent) callWebFetchCached(ctx context.Context, argsJSON string) (string
 	if args.URL == "" {
 		return "", fmt.Errorf("web_fetch: url is required")
 	}
-	parsed, err := url.Parse(args.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", fmt.Errorf("web_fetch: invalid url")
+	if err := validateWebFetchURL(ctx, args.URL); err != nil {
+		return "", fmt.Errorf("web_fetch: %w", err)
 	}
 
 	var emb []float32
@@ -118,6 +126,9 @@ func (a *Agent) fetchAndExtract(ctx context.Context, pageURL string) (string, er
 }
 
 func fetchViaHTTP(ctx context.Context, pageURL string) (string, string, error) {
+	if err := validateWebFetchURL(ctx, pageURL); err != nil {
+		return "", "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
 	if err != nil {
 		return "", "", err
@@ -147,6 +158,9 @@ func fetchViaHTTP(ctx context.Context, pageURL string) (string, string, error) {
 }
 
 func fetchViaCDP(ctx context.Context, cdpURL, pageURL string) (string, string, error) {
+	if err := validateWebFetchURL(ctx, pageURL); err != nil {
+		return "", "", err
+	}
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, cdpURL)
 	defer cancelAlloc()
 
@@ -178,6 +192,51 @@ func fetchViaCDP(ctx context.Context, cdpURL, pageURL string) (string, string, e
 		title = article.Title
 	}
 	return strings.TrimSpace(article.TextContent), strings.TrimSpace(title), nil
+}
+
+func validateWebFetchURL(ctx context.Context, raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("invalid url")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("userinfo in url is not allowed")
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("missing host")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isUnsafeWebFetchIP(ip) {
+			return fmt.Errorf("blocked non-public target: %s", host)
+		}
+		return nil
+	}
+	addrs, err := webFetchResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return fmt.Errorf("resolve host: %w", err)
+	}
+	if len(addrs) == 0 {
+		return fmt.Errorf("host has no addresses")
+	}
+	for _, addr := range addrs {
+		if isUnsafeWebFetchIP(addr.IP) {
+			return fmt.Errorf("blocked non-public target: %s", addr.IP.String())
+		}
+	}
+	return nil
+}
+
+func isUnsafeWebFetchIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
 }
 
 func formatFetchResult(title, pageURL, text string) string {

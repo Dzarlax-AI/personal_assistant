@@ -111,6 +111,9 @@ admin_api:
   token: ${ADMIN_API_TOKEN}
   trust_forward_auth: true
   forward_auth_header: X-authentik-username
+  trusted_proxy_cidrs:
+    - 127.0.0.1/32
+    - ::1/128
   base_url: https://assistant.dzarlax.dev
 
 # Artificial Analysis API — overlays Intelligence Index scores onto model capabilities.

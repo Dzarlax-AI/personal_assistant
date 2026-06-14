@@ -2,7 +2,10 @@ package adminapi
 
 import (
 	"crypto/subtle"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
@@ -23,7 +26,7 @@ const authCookieName = "admin_auth"
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 1. Forward-auth (Authentik via Traefik).
-		if s.cfg.TrustForwardAuth && r.Header.Get(s.cfg.ForwardAuthHeader) != "" {
+		if s.cfg.TrustForwardAuth && r.Header.Get(s.cfg.ForwardAuthHeader) != "" && s.requestFromTrustedForwardAuthProxy(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -71,4 +74,34 @@ func (s *Server) tokenMatches(got string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+}
+
+func (s *Server) requestFromTrustedForwardAuthProxy(r *http.Request) bool {
+	if len(s.cfg.TrustedProxyCIDRs) == 0 {
+		s.logger.Warn("forward-auth header ignored: no trusted proxy CIDRs configured")
+		return false
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		s.logger.Warn("forward-auth header ignored: invalid remote address", "remote_addr", r.RemoteAddr)
+		return false
+	}
+	for _, raw := range s.cfg.TrustedProxyCIDRs {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil {
+			s.logger.Warn("forward-auth trusted proxy CIDR ignored", "cidr", raw, "err", err)
+			continue
+		}
+		if prefix.Contains(addr) {
+			return true
+		}
+	}
+	s.logger.Warn("forward-auth header ignored: untrusted remote address",
+		slog.String("remote_addr", r.RemoteAddr),
+	)
+	return false
 }

@@ -45,8 +45,8 @@ func TestTemplatesParse(t *testing.T) {
 		CatalogProvider: "openrouter",
 	}
 	cases := map[string]any{
-		viewIndex:       data,
-		viewRouting:     data.Routing, // routing view takes uiRouting directly
+		viewIndex:         data,
+		viewRouting:       data.Routing, // routing view takes uiRouting directly
 		viewModelsBrowser: data,
 	}
 	for v, d := range cases {
@@ -135,6 +135,7 @@ func TestAuthForwardAuth(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.TrustForwardAuth = true
 	s.cfg.ForwardAuthHeader = "X-authentik-username"
+	s.cfg.TrustedProxyCIDRs = []string{"127.0.0.1/32", "::1/128"}
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	srv := httptest.NewServer(mux)
@@ -161,6 +162,32 @@ func TestAuthForwardAuth(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401 without forward-auth header, got %d", resp2.StatusCode)
+	}
+}
+
+func TestAuthForwardAuthRequiresTrustedProxy(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.TrustForwardAuth = true
+	s.cfg.ForwardAuthHeader = "X-authentik-username"
+	s.cfg.TrustedProxyCIDRs = []string{"10.0.0.0/8"}
+
+	called := false
+	handler := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/routing", nil)
+	req.RemoteAddr = "203.0.113.10:5555"
+	req.Header.Set("X-authentik-username", "alice")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("forward-auth handler should not be called for an untrusted remote")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

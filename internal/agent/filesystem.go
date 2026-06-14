@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	fsListFilesTool      = "fs_list"
-	fsReadFileTool       = "fs_read"
-	fsWriteFileTool      = "fs_write"
-	fsAppendFileTool     = "fs_append"
-	fsDeleteFileTool     = "fs_delete"
-	fsSearchFilesTool    = "fs_search"
+	fsListFilesTool   = "fs_list"
+	fsReadFileTool    = "fs_read"
+	fsWriteFileTool   = "fs_write"
+	fsAppendFileTool  = "fs_append"
+	fsDeleteFileTool  = "fs_delete"
+	fsSearchFilesTool = "fs_search"
 
 	fsMaxReadSize   = 512 * 1024 // 512 KB
 	fsMaxSearchHits = 200
@@ -46,6 +46,76 @@ func (c FilesystemConfig) safePath(relative string) (string, error) {
 		return "", fmt.Errorf("path escapes the allowed directory")
 	}
 	return abs, nil
+}
+
+func (c FilesystemConfig) realRoot() (string, error) {
+	root, err := filepath.Abs(c.Root)
+	if err != nil {
+		return "", fmt.Errorf("invalid root: %w", err)
+	}
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve root: %w", err)
+	}
+	return real, nil
+}
+
+func pathWithinRoot(path, root string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+func (c FilesystemConfig) safeExistingPath(relative string) (string, error) {
+	target, err := c.safePath(relative)
+	if err != nil {
+		return "", err
+	}
+	root, err := c.realRoot()
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", err
+	}
+	if !pathWithinRoot(real, root) {
+		return "", fmt.Errorf("path escapes the allowed directory")
+	}
+	return real, nil
+}
+
+func (c FilesystemConfig) safeWritePath(relative string) (string, error) {
+	target, err := c.safePath(relative)
+	if err != nil {
+		return "", err
+	}
+	root, err := c.realRoot()
+	if err != nil {
+		return "", err
+	}
+	if real, err := filepath.EvalSymlinks(target); err == nil {
+		if !pathWithinRoot(real, root) {
+			return "", fmt.Errorf("path escapes the allowed directory")
+		}
+		return real, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	parent := filepath.Dir(target)
+	for {
+		if real, err := filepath.EvalSymlinks(parent); err == nil {
+			if !pathWithinRoot(real, root) {
+				return "", fmt.Errorf("path escapes the allowed directory")
+			}
+			break
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", fmt.Errorf("create directories: no existing parent inside root")
+		}
+		parent = next
+	}
+	return target, nil
 }
 
 // filesystemTools returns all tool definitions for LLM function calling.
@@ -175,8 +245,11 @@ func fsList(cfg FilesystemConfig, argsJSON string) (string, error) {
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &args)
 
-	target, err := cfg.safePath(args.Path)
+	target, err := cfg.safeExistingPath(args.Path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("Path not found: %s", args.Path), nil
+		}
 		return "", err
 	}
 
@@ -221,8 +294,11 @@ func fsRead(cfg FilesystemConfig, argsJSON string) (string, error) {
 		return "", fmt.Errorf("read_file: path is required")
 	}
 
-	target, err := cfg.safePath(args.Path)
+	target, err := cfg.safeExistingPath(args.Path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("File not found: %s", args.Path), nil
+		}
 		return "", err
 	}
 
@@ -256,7 +332,7 @@ func fsWrite(cfg FilesystemConfig, argsJSON string) (string, error) {
 		return "", fmt.Errorf("write_file: path is required")
 	}
 
-	target, err := cfg.safePath(args.Path)
+	target, err := cfg.safeWritePath(args.Path)
 	if err != nil {
 		return "", err
 	}
@@ -279,7 +355,7 @@ func fsAppend(cfg FilesystemConfig, argsJSON string) (string, error) {
 		return "", fmt.Errorf("append_file: path is required")
 	}
 
-	target, err := cfg.safePath(args.Path)
+	target, err := cfg.safeWritePath(args.Path)
 	if err != nil {
 		return "", err
 	}
@@ -310,6 +386,12 @@ func fsDelete(cfg FilesystemConfig, argsJSON string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if _, err := cfg.safeExistingPath(args.Path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("File not found: %s", args.Path), nil
+		}
+		return "", err
+	}
 
 	info, err := os.Stat(target)
 	if os.IsNotExist(err) {
@@ -336,7 +418,7 @@ func fsSearch(cfg FilesystemConfig, argsJSON string) (string, error) {
 		return "", fmt.Errorf("search_files: query is required")
 	}
 
-	base, err := cfg.safePath(args.Path)
+	base, err := cfg.safeExistingPath(args.Path)
 	if err != nil {
 		return "", err
 	}
@@ -348,7 +430,19 @@ func fsSearch(cfg FilesystemConfig, argsJSON string) (string, error) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		readPath := path
+		if d.Type()&fs.ModeSymlink != 0 {
+			relPath, err := filepath.Rel(cfg.Root, path)
+			if err != nil {
+				return nil
+			}
+			real, err := cfg.safeExistingPath(relPath)
+			if err != nil {
+				return nil
+			}
+			readPath = real
+		}
+		data, err := os.ReadFile(readPath)
 		if err != nil {
 			return nil // skip unreadable files
 		}

@@ -23,29 +23,29 @@ import (
 )
 
 const (
-	maxMessageLen         = 4096
-	requestTimeout        = 5 * time.Minute
-	forwardTTL            = 5 * time.Minute
-	forwardEmbedTimeout   = 10 * time.Second
-	batchTimeout          = 2 * time.Second
-	maxImagesPerBatch     = 5
-	downloadTimeout       = 30 * time.Second
-	maxInputLen           = 50 * 1024 // 50 KB cap on incoming text
-	forwardFilterMinSize  = 3         // only filter by relevance when more than this many forwards are buffered
-	forwardSelectThresh   = 0.25      // min cosine similarity to include a buffered forward
-	maxConcurrentUpdates  = 10        // limit concurrent goroutines processing updates
-	maxDocumentSize       = 20 * 1024 * 1024 // 20 MB cap on document uploads
+	maxMessageLen        = 4096
+	requestTimeout       = 5 * time.Minute
+	forwardTTL           = 5 * time.Minute
+	forwardEmbedTimeout  = 10 * time.Second
+	batchTimeout         = 2 * time.Second
+	maxImagesPerBatch    = 5
+	downloadTimeout      = 30 * time.Second
+	maxInputLen          = 50 * 1024        // 50 KB cap on incoming text
+	forwardFilterMinSize = 3                // only filter by relevance when more than this many forwards are buffered
+	forwardSelectThresh  = 0.25             // min cosine similarity to include a buffered forward
+	maxConcurrentUpdates = 10               // limit concurrent goroutines processing updates
+	maxDocumentSize      = 20 * 1024 * 1024 // 20 MB cap on document uploads
 )
 
 // supportedDocMIME lists MIME types accepted as inline documents for the LLM.
 var supportedDocMIME = map[string]bool{
-	"application/pdf":    true,
-	"text/plain":         true,
-	"text/csv":           true,
-	"text/html":          true,
-	"text/markdown":      true,
-	"application/json":   true,
-	"application/xml":    true,
+	"application/pdf":  true,
+	"text/plain":       true,
+	"text/csv":         true,
+	"text/html":        true,
+	"text/markdown":    true,
+	"application/json": true,
+	"application/xml":  true,
 }
 
 func isSupportedDocument(mime string) bool {
@@ -135,26 +135,57 @@ func NewHandler(cfg config.TelegramConfig, ag *agent.Agent, logger *slog.Logger)
 }
 
 func (h *Handler) Start(ctx context.Context) {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := h.bot.GetUpdatesChan(u)
+	u := newUpdateConfig()
 
 	for {
-		select {
-		case <-ctx.Done():
-			h.bot.StopReceivingUpdates()
-			return
-		case update, ok := <-updates:
-			if !ok {
+		updates, err := h.bot.GetUpdates(u)
+		if err != nil {
+			h.logger.Warn("failed to get Telegram updates, retrying",
+				"err", redactTelegramToken(err.Error()),
+				"retry_in", "3s",
+			)
+			select {
+			case <-ctx.Done():
 				return
+			case <-time.After(3 * time.Second):
+				continue
 			}
-			h.sem <- struct{}{} // acquire slot; blocks if maxConcurrentUpdates reached
-			go func() {
+		}
+
+		for _, update := range updates {
+			if update.UpdateID >= u.Offset {
+				u.Offset = update.UpdateID + 1
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case h.sem <- struct{}{}: // acquire slot; blocks if maxConcurrentUpdates reached
+			}
+			go func(update tgbotapi.Update) {
 				defer func() { <-h.sem }() // release slot
 				h.handleUpdate(update)
-			}()
+			}(update)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 	}
+}
+
+func newUpdateConfig() tgbotapi.UpdateConfig {
+	u := tgbotapi.NewUpdate(0)
+	u.Timeout = 60
+	u.AllowedUpdates = []string{"message", "callback_query"}
+	return u
+}
+
+var telegramTokenInURL = regexp.MustCompile(`bot[0-9]+:[A-Za-z0-9_-]+`)
+
+func redactTelegramToken(s string) string {
+	return telegramTokenInURL.ReplaceAllString(s, "bot<redacted>")
 }
 
 func (h *Handler) handleUpdate(update tgbotapi.Update) {

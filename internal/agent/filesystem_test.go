@@ -223,3 +223,44 @@ func TestReadFile_TooLarge(t *testing.T) {
 		t.Error("should return size error, not contents")
 	}
 }
+
+func TestReadFile_SymlinkEscapeBlocked(t *testing.T) {
+	cfg, root := tmpRoot(t)
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(root, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]string{"path": "link.txt"})
+	if got, err := fsRead(cfg, string(args)); err == nil {
+		t.Fatalf("expected symlink escape to fail, got %q", got)
+	}
+}
+
+func TestWriteFile_SymlinkEscapeBlocked(t *testing.T) {
+	cfg, root := tmpRoot(t)
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(root, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	args, _ := json.Marshal(map[string]string{"path": "link.txt", "content": "overwrite"})
+	if _, err := fsWrite(cfg, string(args)); err == nil {
+		t.Fatal("expected symlink escape write to fail")
+	}
+	data, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "secret" {
+		t.Fatalf("outside file was modified: %q", data)
+	}
+}

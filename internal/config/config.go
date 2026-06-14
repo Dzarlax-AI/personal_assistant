@@ -23,17 +23,17 @@ func expandEnvWithDefaults(s string) string {
 }
 
 type Config struct {
-	Telegram                  TelegramConfig   `yaml:"telegram"`
-	Models                    ModelsConfig     `yaml:"models"`
-	Routing                   RoutingConfig    `yaml:"routing"`
-	ToolFilter                ToolFilterConfig `yaml:"tool_filter"`
-	WebSearch                 WebSearchConfig  `yaml:"web_search"`
-	WebFetch                  WebFetchConfig   `yaml:"web_fetch"`
-	Filesystem                FilesystemConfig `yaml:"filesystem"`
-	TTS                       TTSConfig        `yaml:"tts"`
-	VoiceAPI                  VoiceAPIConfig   `yaml:"voice_api"`
-	AdminAPI                  AdminAPIConfig   `yaml:"admin_api"`
-	ArtificialAnalysisAPIKey  string           `yaml:"artificial_analysis_api_key"`
+	Telegram                 TelegramConfig   `yaml:"telegram"`
+	Models                   ModelsConfig     `yaml:"models"`
+	Routing                  RoutingConfig    `yaml:"routing"`
+	ToolFilter               ToolFilterConfig `yaml:"tool_filter"`
+	WebSearch                WebSearchConfig  `yaml:"web_search"`
+	WebFetch                 WebFetchConfig   `yaml:"web_fetch"`
+	Filesystem               FilesystemConfig `yaml:"filesystem"`
+	TTS                      TTSConfig        `yaml:"tts"`
+	VoiceAPI                 VoiceAPIConfig   `yaml:"voice_api"`
+	AdminAPI                 AdminAPIConfig   `yaml:"admin_api"`
+	ArtificialAnalysisAPIKey string           `yaml:"artificial_analysis_api_key"`
 }
 
 type WebSearchConfig struct {
@@ -49,8 +49,8 @@ type WebFetchConfig struct {
 }
 
 type ToolFilterConfig struct {
-	TopK                  int      `yaml:"top_k"`                    // 0 = disabled
-	AlwaysIncludeKeywords []string `yaml:"always_include_keywords"`  // substrings matched against tool names (case-insensitive) that bypass top-K filtering
+	TopK                  int      `yaml:"top_k"`                   // 0 = disabled
+	AlwaysIncludeKeywords []string `yaml:"always_include_keywords"` // substrings matched against tool names (case-insensitive) that bypass top-K filtering
 }
 
 type FilesystemConfig struct {
@@ -77,12 +77,13 @@ type VoiceAPIConfig struct {
 // editor). Auth priority: authentik forward-auth headers (if trusted) →
 // cookie → bearer. See internal/adminapi for details.
 type AdminAPIConfig struct {
-	Enabled           bool   `yaml:"enabled"`
-	Listen            string `yaml:"listen"`              // e.g. ":8087"
-	Token             string `yaml:"token"`               // bootstrap/API bearer token
-	TrustForwardAuth  bool   `yaml:"trust_forward_auth"`  // trust X-authentik-* headers
-	ForwardAuthHeader string `yaml:"forward_auth_header"` // header checked for presence (default: X-authentik-username)
-	BaseURL           string `yaml:"base_url"`            // public URL surfaced in Telegram /routing
+	Enabled           bool     `yaml:"enabled"`
+	Listen            string   `yaml:"listen"`              // e.g. ":8087"
+	Token             string   `yaml:"token"`               // bootstrap/API bearer token
+	TrustForwardAuth  bool     `yaml:"trust_forward_auth"`  // trust X-authentik-* headers from trusted proxies only
+	ForwardAuthHeader string   `yaml:"forward_auth_header"` // header checked for presence (default: X-authentik-username)
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs"` // sources allowed to assert forward-auth headers
+	BaseURL           string   `yaml:"base_url"`            // public URL surfaced in Telegram /routing
 }
 
 type MCPServerConfig struct {
@@ -118,16 +119,15 @@ type ModelConfig struct {
 // provider and is not registered as an LLM.
 type ModelsConfig map[string]ModelConfig
 
-
 type RoutingConfig struct {
-	Simple              string `yaml:"simple"`              // level 1: simple/cheap tasks
-	Default             string `yaml:"default"`             // level 2: moderate tasks (agentic loop)
-	Complex             string `yaml:"complex"`             // level 3: complex reasoning
+	Simple              string `yaml:"simple"`  // level 1: simple/cheap tasks
+	Default             string `yaml:"default"` // level 2: moderate tasks (agentic loop)
+	Complex             string `yaml:"complex"` // level 3: complex reasoning
 	Fallback            string `yaml:"fallback"`
 	Multimodal          string `yaml:"multimodal"`
-	Classifier          string `yaml:"classifier"`          // model that rates complexity 1/2/3
-	ClassifierTimeout   int    `yaml:"classifier_timeout"`  // seconds; default 15
-	ClassifierPrompt    string `yaml:"classifier_prompt"`   // system prompt; has default
+	Classifier          string `yaml:"classifier"`         // model that rates complexity 1/2/3
+	ClassifierTimeout   int    `yaml:"classifier_timeout"` // seconds; default 15
+	ClassifierPrompt    string `yaml:"classifier_prompt"`  // system prompt; has default
 	Compaction          string `yaml:"compaction"`
 	ClassifierMinLength int    `yaml:"classifier_min_length"` // 0 = always; <0 = disabled
 }
