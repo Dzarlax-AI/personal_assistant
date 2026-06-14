@@ -76,6 +76,7 @@ type tgAdminModel struct {
 	Current         bool           `json:"current"`
 	Source          string         `json:"source,omitempty"`
 	Policy          string         `json:"policy,omitempty"`
+	Section         string         `json:"section,omitempty"`
 	OverrideNote    string         `json:"override_note,omitempty"`
 	Reasons         []string       `json:"reasons,omitempty"`
 	Warnings        []string       `json:"warnings,omitempty"`
@@ -552,6 +553,7 @@ func appendFreeCandidates(models, free []uiModel, role string) []uiModel {
 			continue
 		}
 		m.Recommended = false
+		m.Section = "untested"
 		annotateModelForRole(&m, role, "free")
 		models = append(models, m)
 		seen[m.ID] = true
@@ -600,6 +602,7 @@ func tgModelFromUI(provider string, m uiModel, current string, checks map[string
 		Current:         m.ID == current,
 		Source:          m.Source,
 		Policy:          m.Policy,
+		Section:         modelSectionKey(m),
 		OverrideNote:    m.OverrideNote,
 		Reasons:         m.Reasons,
 		Warnings:        m.Warnings,

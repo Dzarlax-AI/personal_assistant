@@ -75,13 +75,69 @@ type rolePreset struct {
 //	(1 - imageShare) * candidate.prompt + imageShare * multimodal_slot.prompt
 const imageShare = 0.10
 
-// bestAgentic — use AA Agentic Index when available; fall back to Intelligence
-// Index for untested models (scaled down to de-rank vs. tested models).
-func bestAgentic(m uiModel) float64 {
-	if m.AgenticIndex > 0 {
-		return m.AgenticIndex
+func roleQuality(m uiModel, role string) float64 {
+	switch role {
+	case "simple", "classifier":
+		if m.TTFT > 0 {
+			return inverseTTFT(m)
+		}
+		if m.SpeedTPS > 0 {
+			return m.SpeedTPS / 100
+		}
+		return maxPositive(m.AgenticIndex, m.Score, m.CodingIndex)
+	case "default", "complex":
+		return maxPositive(m.AgenticIndex, m.CodingIndex, m.Score)
+	case "multimodal", "compaction":
+		return maxPositive(m.Score, m.CodingIndex)
+	default:
+		return maxPositive(m.AgenticIndex, m.Score, m.CodingIndex)
 	}
-	return m.Score
+}
+
+func roleQualityLabel(m uiModel, role string) string {
+	switch role {
+	case "simple", "classifier":
+		if m.TTFT > 0 {
+			return fmt.Sprintf("AA TTFT %.2fs", m.TTFT)
+		}
+		if m.SpeedTPS > 0 {
+			return fmt.Sprintf("AA speed %.0f t/s", m.SpeedTPS)
+		}
+	case "default", "complex":
+		if m.AgenticIndex > 0 && m.AgenticIndex >= m.CodingIndex && m.AgenticIndex >= m.Score {
+			return fmt.Sprintf("AA agentic %.0f", m.AgenticIndex)
+		}
+		if m.CodingIndex > 0 && m.CodingIndex >= m.Score {
+			return fmt.Sprintf("AA coding %.0f", m.CodingIndex)
+		}
+	case "multimodal", "compaction":
+		if m.Score > 0 && m.Score >= m.CodingIndex {
+			return fmt.Sprintf("AA intelligence %.0f", m.Score)
+		}
+		if m.CodingIndex > 0 {
+			return fmt.Sprintf("AA coding %.0f", m.CodingIndex)
+		}
+	}
+	if m.AgenticIndex > 0 {
+		return fmt.Sprintf("AA agentic %.0f", m.AgenticIndex)
+	}
+	if m.Score > 0 {
+		return fmt.Sprintf("AA intelligence %.0f", m.Score)
+	}
+	if m.CodingIndex > 0 {
+		return fmt.Sprintf("AA coding %.0f", m.CodingIndex)
+	}
+	return ""
+}
+
+func maxPositive(values ...float64) float64 {
+	best := 0.0
+	for _, v := range values {
+		if v > best {
+			best = v
+		}
+	}
+	return best
 }
 
 // effectivePromptOf returns the cost-adjusted prompt price. If the model is
@@ -121,7 +177,7 @@ func inverseTTFT(m uiModel) float64 {
 
 var rolePresets = map[string]rolePreset{
 	"simple": {
-		Description: "tools + multilingual, ≤ $0.2/M prompt, ctx ≥ 32k. Pareto frontier on (1/TTFT, blended cost) when speed data is available, else (AA Agentic Index, blended cost).",
+		Description: "tools + multilingual, ≤ $0.2/M prompt, ctx ≥ 32k. Pareto frontier on role quality (TTFT, throughput, then AA quality) versus blended cost.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -138,7 +194,7 @@ var rolePresets = map[string]rolePreset{
 	},
 
 	"default": {
-		Description: "workhorse tools + multilingual, excludes L1/classifier-sized models, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, blended cost).",
+		Description: "workhorse tools + multilingual, excludes L1/classifier-sized models, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on role quality (AA Agentic/Coding/Intelligence) versus blended cost.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -151,11 +207,11 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) },
+		Axes: func(m uiModel) (float64, float64) { return roleQuality(m, "default"), effectiveBlendedPriceOf(m) },
 	},
 
 	"complex": {
-		Description: "frontier reasoners (thinking/r1/qwq/grok) with tools + multilingual, ≤ $5/M prompt, ctx ≥ 64k. Pareto frontier on (AA Agentic Index, blended cost). Claude via bridge is preferred when configured.",
+		Description: "frontier reasoners (thinking/r1/qwq/grok) with tools + multilingual, ≤ $5/M prompt, ctx ≥ 64k. Pareto frontier on role quality (AA Agentic/Coding/Intelligence) versus blended cost. Claude via bridge is preferred when configured.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -168,11 +224,11 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 64000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 5.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) },
+		Axes: func(m uiModel) (float64, float64) { return roleQuality(m, "complex"), effectiveBlendedPriceOf(m) },
 	},
 
 	"multimodal": {
-		Description: "vision + tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Intelligence Index, blended cost).",
+		Description: "vision + tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on role quality (AA Intelligence/Coding) versus blended cost.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -182,11 +238,11 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return m.Score, effectiveBlendedPriceOf(m) },
+		Axes: func(m uiModel) (float64, float64) { return roleQuality(m, "multimodal"), effectiveBlendedPriceOf(m) },
 	},
 
 	"compaction": {
-		Description: "multilingual, ctx ≥ 64k (long history in, short summary out), completion ≤ $2/M. Pareto frontier on (AA Intelligence Index, completion price).",
+		Description: "multilingual, ctx ≥ 64k (long history in, short summary out), completion ≤ $2/M. Pareto frontier on role quality (AA Intelligence/Coding) versus completion price.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -197,11 +253,11 @@ var rolePresets = map[string]rolePreset{
 				c.ContextLength >= 64000 &&
 				c.CompletionPrice > 0 && c.CompletionPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return m.Score, m.CompletionPrice },
+		Axes: func(m uiModel) (float64, float64) { return roleQuality(m, "compaction"), m.CompletionPrice },
 	},
 
 	"classifier": {
-		Description: "≤ $0.1/M prompt, multilingual, verified paid path for automatic recommendations. Free variants are shown separately until checked. Pareto frontier on (1/TTFT, prompt price) when speed data is available, else (AA Intelligence Index, prompt price). Local Ollama stays the primary recommendation.",
+		Description: "≤ $0.1/M prompt, multilingual, verified paid path for automatic recommendations. Free variants are shown separately until checked. Pareto frontier on role quality (TTFT, throughput, then AA quality) versus prompt price. Local Ollama stays the primary recommendation.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -227,28 +283,16 @@ func isUnstableVariant(modelID string) bool {
 	return unstableVariantRegex.MatchString(modelID)
 }
 
-// classifierAxes picks (1/TTFT, price) when at least one candidate has TTFT
-// data, otherwise falls back to (Score, price). Mixing two quality scales in
-// the same Pareto frontier would be meaningless, so we pick one globally.
+// classifierAxes ranks tiny prompt-only models by latency first, then speed or
+// available AA quality when latency is absent.
 func classifierAxes(candidates []uiModel) paretoAxes {
-	for _, m := range candidates {
-		if m.TTFT > 0 {
-			return func(m uiModel) (float64, float64) { return inverseTTFT(m), m.PromptPrice }
-		}
-	}
-	return func(m uiModel) (float64, float64) { return m.Score, m.PromptPrice }
+	return func(m uiModel) (float64, float64) { return roleQuality(m, "classifier"), m.PromptPrice }
 }
 
-// simpleAxes keeps L1 recommendations distinct from default: when AA speed
-// data exists, startup latency is the quality axis. Without TTFT data, fall
-// back to agentic quality so new/untested models are not promoted blindly.
+// simpleAxes keeps L1 recommendations distinct from default: latency and
+// throughput are stronger signals than benchmark quality for this role.
 func simpleAxes(candidates []uiModel) paretoAxes {
-	for _, m := range candidates {
-		if m.TTFT > 0 {
-			return func(m uiModel) (float64, float64) { return inverseTTFT(m), effectiveBlendedPriceOf(m) }
-		}
-	}
-	return func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) }
+	return func(m uiModel) (float64, float64) { return roleQuality(m, "simple"), effectiveBlendedPriceOf(m) }
 }
 
 func axesForPreset(role string, preset rolePreset, candidates []uiModel) paretoAxes {
@@ -326,6 +370,7 @@ func appendNearFrontierAlternatives(frontier, candidates []uiModel, axes paretoA
 			continue
 		}
 		m.Recommended = false
+		m.Section = "interesting"
 		if p > 0 {
 			m.ValuePerDollar = q / p
 		}
@@ -368,6 +413,7 @@ func appendUntestedAlternatives(models, candidates []uiModel, axes paretoAxes, r
 			continue
 		}
 		m.Recommended = false
+		m.Section = "untested"
 		annotateModelForRole(&m, role, "untested")
 		untested = append(untested, m)
 	}
@@ -450,6 +496,7 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 			frontier[i].ValuePerDollar = q / p
 		}
 		frontier[i].Recommended = true
+		frontier[i].Section = "recommended"
 		annotateModelForRole(&frontier[i], role, "preset")
 	}
 	return appendNearFrontierAlternatives(frontier, candidates, axes, role, 4)
@@ -486,12 +533,10 @@ func annotateModelForRole(m *uiModel, role, source string) {
 	if m.ContextLength > 0 {
 		reasons = append(reasons, fmt.Sprintf("ctx %s", shortContextLabel(m.ContextLength)))
 	}
-	if m.AgenticIndex > 0 {
-		reasons = append(reasons, fmt.Sprintf("AA agentic %.0f", m.AgenticIndex))
-	} else if m.Score > 0 {
-		reasons = append(reasons, fmt.Sprintf("AA intelligence %.0f", m.Score))
+	if label := roleQualityLabel(*m, role); label != "" {
+		reasons = append(reasons, label)
 	} else {
-		warnings = append(warnings, "no AA benchmark data")
+		warnings = append(warnings, "no role benchmark data")
 	}
 	if m.ValuePerDollar > 0 {
 		reasons = append(reasons, fmt.Sprintf("value %.0f/$", m.ValuePerDollar))

@@ -52,6 +52,7 @@ type uiModel struct {
 	Recommended     bool
 	Source          string
 	Policy          string
+	Section         string
 	OverrideNote    string
 	Reasons         []string
 	Warnings        []string
@@ -90,11 +91,19 @@ type uiFilters struct {
 	SortDir           string // "asc" or "desc"
 }
 
+type uiModelSection struct {
+	Key         string
+	Title       string
+	Description string
+	Models      []uiModel
+}
+
 type indexData struct {
 	ActiveTab       string // "routing" or "analytics" — drives tab highlight in layout
 	Routing         uiRouting
 	Slots           []uiSlot // slots backing the currently-browsed provider (for per-model assign buttons)
 	Models          []uiModel
+	ModelSections   []uiModelSection
 	Filters         uiFilters
 	CatalogProvider string // "openrouter" | "gemini" — which catalog is shown in the models browser
 }
@@ -383,6 +392,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		models = appendAllowedOverrideCandidates(models, allCaps, aaModels, catalogProv, preset, overrides)
 		models = filterModelOverrides(models, catalogProv, overrides, true)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
+		sections := buildModelSections(models, true)
 		filters := uiFilters{
 			ActivePreset:      preset,
 			PresetDescription: p.Description,
@@ -410,6 +420,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			Routing:         s.buildRouting(),
 			Slots:           s.allAssignableSlots(),
 			Models:          models,
+			ModelSections:   sections,
 			Filters:         filters,
 			CatalogProvider: catalogProv,
 		}
@@ -554,6 +565,83 @@ func effectiveOrNominal(m uiModel) float64 {
 		return m.EffectivePrompt
 	}
 	return m.PromptPrice
+}
+
+func buildModelSections(models []uiModel, presetMode bool) []uiModelSection {
+	if !presetMode || len(models) == 0 {
+		return nil
+	}
+	order := []uiModelSection{
+		{Key: "recommended", Title: "Recommended", Description: "Stable, role-fit models backed by benchmark data."},
+		{Key: "interesting", Title: "Interesting", Description: "Plausible alternatives and non-obvious trade-offs worth reviewing."},
+		{Key: "untested", Title: "Untested", Description: "Capability-compatible models with missing quality data or local evidence."},
+		{Key: "blocked", Title: "Blocked", Description: "Filtered or manually denied models, shown only when present."},
+	}
+	byKey := make(map[string][]uiModel, len(order))
+	for _, m := range models {
+		key := modelSectionKey(m)
+		byKey[key] = append(byKey[key], m)
+	}
+	out := make([]uiModelSection, 0, len(order))
+	for _, section := range order {
+		section.Models = applySectionDiversity(byKey[section.Key], 3)
+		if len(section.Models) == 0 {
+			continue
+		}
+		out = append(out, section)
+	}
+	return out
+}
+
+func modelSectionKey(m uiModel) string {
+	switch {
+	case m.Policy == "manual_deny" || m.Policy == "free_blocked":
+		return "blocked"
+	case m.Section != "":
+		return m.Section
+	case m.Recommended:
+		return "recommended"
+	case m.Source == "untested" || m.Policy == "free_unverified":
+		return "untested"
+	case m.Source == "near_frontier" || m.Source == "manual" || m.Policy == "manual_allow":
+		return "interesting"
+	default:
+		return "interesting"
+	}
+}
+
+func applySectionDiversity(models []uiModel, perFamily int) []uiModel {
+	if perFamily <= 0 || len(models) == 0 {
+		return models
+	}
+	out := make([]uiModel, 0, len(models))
+	counts := map[string]int{}
+	for _, m := range models {
+		if m.Policy == "manual_allow" {
+			out = append(out, m)
+			counts[modelFamilyKey(m.ID)]++
+			continue
+		}
+		family := modelFamilyKey(m.ID)
+		if counts[family] >= perFamily {
+			continue
+		}
+		counts[family]++
+		out = append(out, m)
+	}
+	return out
+}
+
+func modelFamilyKey(id string) string {
+	provider, slug, ok := strings.Cut(id, "/")
+	if !ok {
+		return id
+	}
+	first := slug
+	if i := strings.IndexAny(slug, "-:"); i >= 0 {
+		first = slug[:i]
+	}
+	return provider + "/" + first
 }
 
 func (s *Server) loadModelTelemetry(ctx context.Context, provider string) map[string]modelTelemetry {

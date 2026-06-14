@@ -62,23 +62,27 @@ func TestPresetInspection(t *testing.T) {
 				vl.ID, 100*vQ/topQ, 100*vP/topP))
 		}
 
-		lines = append(lines, fmt.Sprintf("%-52s %7s %7s %4s %6s %6s %6s %7s %8s", "model", "prompt$", "eff$", "V", "agent", "TTFT", "think", "markup", "value"))
+		lines = append(lines, fmt.Sprintf("%-52s %7s %7s %4s %-18s %6s %6s %7s %8s", "model", "prompt$", "eff$", "V", "quality", "TTFT", "think", "markup", "value"))
 		for _, m := range results {
 			vis := " "
 			if m.Vision {
 				vis = "✓"
+			}
+			qualityLabel := roleQualityLabel(m, role)
+			if qualityLabel == "" {
+				qualityLabel = "-"
 			}
 			eff := m.PromptPrice
 			if m.EffectivePrompt > 0 {
 				eff = m.EffectivePrompt
 			}
 			lines = append(lines, fmt.Sprintf(
-				"%-52s %7.3f %7.3f %4s %6.1f %6.2f %6.1f %+6.0f%% %8.0f",
+				"%-52s %7.3f %7.3f %4s %-18s %6.2f %6.1f %+6.0f%% %8.0f",
 				trunc(m.ID, 52),
 				m.PromptPrice,
 				eff,
 				vis,
-				m.AgenticIndex,
+				trunc(qualityLabel, 18),
 				m.TTFT,
 				m.ThinkTime,
 				m.MarkupPct,

@@ -55,9 +55,9 @@
           <code>0.9 × prompt + 0.1 × multimodal_slot.prompt</code> because image messages route to the multimodal slot. Assumes 10% of messages contain images. Vision-capable models pay nominal price.
           <br><br>
           <strong>Quality axis</strong> is role-specific:
-          <code>default</code>/<code>complex</code> → AA Agentic Index;
-          <code>multimodal</code>/<code>compaction</code> → AA Intelligence Index;
-          <code>simple</code>/<code>classifier</code> → 1/TTFT when speed data is available, else role quality.
+          <code>default</code>/<code>complex</code> → best available AA Agentic/Coding/Intelligence signal;
+          <code>multimodal</code>/<code>compaction</code> → best available AA Intelligence/Coding signal;
+          <code>simple</code>/<code>classifier</code> → TTFT, throughput, then AA quality.
         </div>
       </details>
     </div>
@@ -103,7 +103,7 @@
               style="cursor:pointer" title="AA Coding Index — performance on coding benchmarks (0-100)">Code{{if eq $s "coding"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"agentic","dir":"{{if and (eq $s "agentic") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
-              style="cursor:pointer" title="AA Agentic Index — tool-use performance in agentic loops (0-100). Primary quality metric for default/complex recommendations; simple uses TTFT first when available.">Agent{{if eq $s "agentic"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+              style="cursor:pointer" title="AA Agentic Index — tool-use performance in agentic loops (0-100). Suggest mode uses the best role-specific AA signal, not this column alone.">Agent{{if eq $s "agentic"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"speed","dir":"{{if and (eq $s "speed") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer" title="Median output tokens per second — throughput after first token">Speed{{if eq $s "speed"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>

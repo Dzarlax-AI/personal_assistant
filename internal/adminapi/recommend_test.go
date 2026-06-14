@@ -204,6 +204,108 @@ func TestDefaultPresetRanksByBlendedCost(t *testing.T) {
 	}
 }
 
+func TestModelSectionsSplitRecommendationBuckets(t *testing.T) {
+	models := []uiModel{
+		{ID: "deepseek/deepseek-v3.2", Recommended: true, Section: "recommended", Policy: "recommended"},
+		{ID: "x-ai/grok-4.3", Source: "near_frontier", Section: "interesting", Policy: "candidate"},
+		{ID: "qwen/qwen-plus", Source: "untested", Section: "untested", Policy: "candidate"},
+	}
+
+	sections := buildModelSections(models, true)
+	if len(sections) != 3 {
+		t.Fatalf("sections len = %d, want 3: %+v", len(sections), sections)
+	}
+	if sections[0].Key != "recommended" || sections[0].Models[0].ID != "deepseek/deepseek-v3.2" {
+		t.Fatalf("unexpected recommended section: %+v", sections)
+	}
+	if sections[1].Key != "interesting" || sections[1].Models[0].ID != "x-ai/grok-4.3" {
+		t.Fatalf("unexpected interesting section: %+v", sections)
+	}
+	if sections[2].Key != "untested" || sections[2].Models[0].ID != "qwen/qwen-plus" {
+		t.Fatalf("unexpected untested section: %+v", sections)
+	}
+}
+
+func TestSectionDiversityCapsModelFamilies(t *testing.T) {
+	models := []uiModel{
+		{ID: "google/gemini-2.5-pro"},
+		{ID: "google/gemini-2.5-flash"},
+		{ID: "google/gemini-3-flash"},
+		{ID: "google/gemini-3.1-flash"},
+		{ID: "x-ai/grok-4.3"},
+	}
+
+	got := applySectionDiversity(models, 3)
+	if len(got) != 4 {
+		t.Fatalf("diversity len = %d, want 4: %+v", len(got), got)
+	}
+	if containsModel(got, "google/gemini-3.1-flash") {
+		t.Fatalf("fourth Gemini family model should be hidden by visible-section diversity cap: %+v", got)
+	}
+	if !containsModel(got, "x-ai/grok-4.3") {
+		t.Fatalf("non-Gemini alternative should remain visible: %+v", got)
+	}
+}
+
+func TestDefaultPresetUsesCodingWhenAgenticIsMissing(t *testing.T) {
+	caps := map[string]llm.Capabilities{
+		"x-ai/grok-4.3": {
+			Tools:           true,
+			Vision:          true,
+			Reasoning:       true,
+			PromptPrice:     1.00,
+			CompletionPrice: 3.00,
+			ContextLength:   1000000,
+			Score:           45,
+		},
+		"google/gemini-2.5-pro": {
+			Tools:           true,
+			Vision:          true,
+			PromptPrice:     1.00,
+			CompletionPrice: 3.00,
+			ContextLength:   1000000,
+			Score:           60,
+		},
+	}
+	aa := map[string]llm.AAModelInfo{
+		"xai/grok-4-3":         {Score: 45, CodingIndex: 72},
+		"google/gemini-25-pro": {Score: 60},
+	}
+
+	got := applyPreset(caps, aa, "default", 0)
+	if len(got) == 0 || got[0].ID != "x-ai/grok-4.3" || !got[0].Recommended {
+		t.Fatalf("default preset should use coding as a role quality signal: %+v", got)
+	}
+	if label := roleQualityLabel(got[0], "default"); label != "AA coding 72" {
+		t.Fatalf("quality label = %q, want AA coding 72", label)
+	}
+}
+
+func TestSimplePresetUsesThroughputWhenTTFTIsMissing(t *testing.T) {
+	caps := map[string]llm.Capabilities{
+		"x-ai/grok-4-fast": {
+			Tools:           true,
+			Vision:          true,
+			Reasoning:       true,
+			PromptPrice:     0.20,
+			CompletionPrice: 0.50,
+			ContextLength:   256000,
+			Score:           20,
+		},
+	}
+	aa := map[string]llm.AAModelInfo{
+		"xai/grok-4-fast": {Score: 20, SpeedTPS: 180},
+	}
+
+	got := applyPreset(caps, aa, "simple", 0)
+	if len(got) != 1 || got[0].ID != "x-ai/grok-4-fast" || !got[0].Recommended {
+		t.Fatalf("simple preset should recommend throughput-ranked candidates without TTFT: %+v", got)
+	}
+	if label := roleQualityLabel(got[0], "simple"); label != "AA speed 180 t/s" {
+		t.Fatalf("quality label = %q, want AA speed 180 t/s", label)
+	}
+}
+
 func containsModel(models []uiModel, id string) bool {
 	for _, m := range models {
 		if m.ID == id {

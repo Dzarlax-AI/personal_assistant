@@ -1,11 +1,39 @@
 {{define "models_tbody"}}
+{{if .ModelSections}}
+  {{range .ModelSections}}
+  <tbody class="models-section" data-section="{{.Key}}">
+    <tr class="models-section__header">
+      <td colspan="14">
+        <strong>{{.Title}}</strong>
+        <span style="color:var(--text-secondary);margin-left:0.5rem;">{{len .Models}} models</span>
+        <div style="color:var(--text-secondary);font-size:0.82rem;margin-top:0.2rem;">{{.Description}}</div>
+      </td>
+    </tr>
+    {{range .Models}}
+      {{template "model_row" dict "Model" . "Root" $}}
+    {{end}}
+  </tbody>
+  {{end}}
+{{else}}
 <tbody id="models-tbody">
   {{range .Models}}
+    {{template "model_row" dict "Model" . "Root" $}}
+  {{else}}
+  <tr><td colspan="14" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
+  {{end}}
+</tbody>
+{{end}}
+{{end}}
+
+{{define "model_row"}}
+  {{$root := .Root}}
+  {{with .Model}}
   {{$modelID := .ID}}
   <tr>
     <td>
       <div class="model-id">{{.ID}}</div>
       <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
+        {{if .Section}}<span class="badge badge--neutral">{{.Section}}</span>{{end}}
         {{if .Policy}}<span class="badge badge--neutral">{{.Policy}}</span>{{end}}
         {{range .Reasons}}<span>{{.}}</span> {{end}}
       </div>
@@ -29,27 +57,27 @@
         <button class="btn btn--small btn--ghost"
                 hx-post="/models/override"
                 hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":"allow"}'
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":"allow"}'
                 hx-target="#models-content"
                 hx-swap="outerHTML">Allow</button>
         <button class="btn btn--small btn--ghost"
                 hx-post="/models/override"
                 hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":"deny"}'
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":"deny"}'
                 hx-target="#models-content"
                 hx-swap="outerHTML">Deny</button>
         {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
         <button class="btn btn--small btn--ghost"
                 hx-post="/models/override"
                 hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$.CatalogProvider}}","state":""}'
+                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":""}'
                 hx-target="#models-content"
                 hx-swap="outerHTML">Clear</button>
         {{end}}
       </div>
       <div class="assign-buttons">
-        {{$prov := $.CatalogProvider}}
-        {{range $.Slots}}
+        {{$prov := $root.CatalogProvider}}
+        {{range $root.Slots}}
         <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
                 hx-post="/slots/{{.Name}}/assign"
                 hx-vals='{"model_id":"{{$modelID}}","provider":"{{$prov}}"}'
@@ -79,8 +107,5 @@
     <td class="price-cell" title="TTFA - TTFT: reasoner's thinking time before answer starts.">{{if gt .ThinkTime 0.0}}{{printf "%.1f" .ThinkTime}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
     <td class="price-cell" title="Quality per $ — role-specific in Suggest, agentic/prompt otherwise.">{{if gt .ValuePerDollar 0.0}}{{printf "%.0f" .ValuePerDollar}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
   </tr>
-  {{else}}
-  <tr><td colspan="14" style="text-align:center;padding:2rem;color:var(--text-secondary);">No models match the filters.</td></tr>
   {{end}}
-</tbody>
 {{end}}

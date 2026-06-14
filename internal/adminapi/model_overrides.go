@@ -126,6 +126,7 @@ func appendAllowedOverrideCandidates(models []uiModel, allCaps map[string]llm.Ca
 			Free:            c.Free(),
 			Score:           c.Score,
 			Recommended:     false,
+			Section:         "interesting",
 		}
 		if aaModels != nil {
 			if info := llm.LookupAAInfo(modelID, aaModels); info != nil {
