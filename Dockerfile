@@ -2,19 +2,13 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG TARGETARCH
 
-# Admin UI static assets. Re-fetched on every build when ASSETS_CACHEBUST
-# differs (CI passes a timestamp / commit SHA). For local iteration, the
-# default value keeps the cached layer.
-#
-# Override for a one-off local refresh:
-#   docker build --build-arg ASSETS_CACHEBUST=$(date +%s) .
-# Pin to a commit SHA rather than @main so jsdelivr's aggressive branch-tip
-# caching can't serve a stale bundle for hours after a DS push. Bump this
-# when you want the latest DS changes; confirm the hash exists at
-# github.com/dzarlax/design-system before committing.
+# Admin UI static assets. Pin to a commit SHA rather than @main so jsdelivr's
+# aggressive branch-tip caching can't serve a stale bundle for hours after a DS
+# push. Bump DS_VERSION or HTMX_VERSION when you want to refresh these assets;
+# confirm the DS hash exists at github.com/dzarlax/design-system before
+# committing.
 ARG DS_VERSION=f36e79e50e9341ef5780fb89ec41c1f49e447811
 ARG HTMX_VERSION=2.0.3
-ARG ASSETS_CACHEBUST=pinned
 
 RUN apk add --no-cache curl
 
@@ -25,10 +19,7 @@ RUN go mod download
 
 COPY . .
 
-# Overwrite the committed placeholders with real assets. The ASSETS_CACHEBUST
-# ARG is referenced so that changing it invalidates this layer.
-RUN echo "assets cachebust: ${ASSETS_CACHEBUST}" && \
-    curl -fsSL "https://cdn.jsdelivr.net/gh/dzarlax/design-system@${DS_VERSION}/dist/dzarlax.css" \
+RUN curl -fsSL "https://cdn.jsdelivr.net/gh/dzarlax/design-system@${DS_VERSION}/dist/dzarlax.css" \
          -o internal/adminapi/static/dzarlax.css && \
     curl -fsSL "https://cdn.jsdelivr.net/gh/dzarlax/design-system@${DS_VERSION}/dist/dzarlax.js" \
          -o internal/adminapi/static/dzarlax.js && \
