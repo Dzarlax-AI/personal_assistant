@@ -403,6 +403,26 @@ func TestFailedModelCheckKeepsTransientFailuresDegraded(t *testing.T) {
 	}
 }
 
+func TestLoadModelChecksNormalizesPaidFreeModelErrors(t *testing.T) {
+	s := newTestServer(t)
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "minimax/minimax-m2.5:free"): {
+			Status: "free_degraded",
+			Error:  "api error (HTTP 404): This model is unavailable for free. The paid version is available now.",
+		},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	got := s.modelCheckStatus(context.Background(), "openrouter", "minimax/minimax-m2.5:free")
+	if got.Status != "free_blocked" {
+		t.Fatalf("status = %s, want free_blocked", got.Status)
+	}
+}
+
 func TestFreeModelCheckCandidatesSkipFreshChecks(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	fresh := time.Now().Add(-time.Hour).Format(time.RFC3339)

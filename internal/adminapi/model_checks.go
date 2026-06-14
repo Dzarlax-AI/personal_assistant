@@ -89,6 +89,7 @@ func (s *Server) loadModelChecks(ctx context.Context) map[string]modelCheckStatu
 		s.logger.Warn("model checks cache parse failed", "err", err)
 		return nil
 	}
+	normalizeModelChecks(out)
 	return out
 }
 
@@ -216,6 +217,15 @@ func isBlockedModelCheckError(message string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeModelChecks(checks map[string]modelCheckStatus) {
+	for key, check := range checks {
+		if check.Status == "free_degraded" && isBlockedModelCheckError(check.Error) {
+			check.Status = "free_blocked"
+			checks[key] = check
+		}
+	}
 }
 
 func (s *Server) startModelCheckScheduler() {
