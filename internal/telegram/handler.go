@@ -640,8 +640,19 @@ func (h *Handler) executeMessage(chatID int64, userMsg llm.Message, voiceReply b
 				suffix = "\n\n`⚙️ " + strings.Join(suffixParts, " · ") + "`"
 			}
 			finalText := response + suffix
-			htmlText := markdownToTelegramHTML(finalText)
+			if h.sendRichMarkdownMsg(chatID, finalText) {
+				h.bot.Request(tgbotapi.NewDeleteMessage(chatID, streamMsgID)) //nolint:errcheck
+				h.logger.Info("response sent", "chat_id", chatID, "len", len(response), "mode", "stream-rich")
+				if statusMsgID != 0 {
+					h.bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsgID)) //nolint:errcheck
+				}
+				if voiceReply && h.agent.TTSEnabled() {
+					go h.sendVoiceReply(chatID, response)
+				}
+				return
+			}
 
+			htmlText := markdownToTelegramHTML(finalText)
 			if len(htmlText) < maxMessageLen {
 				edit := tgbotapi.NewEditMessageText(chatID, streamMsgID, htmlText)
 				edit.ParseMode = tgbotapi.ModeHTML
@@ -899,6 +910,10 @@ func (h *Handler) downloadFile(fileID string) ([]byte, error) {
 }
 
 func (h *Handler) sendResponse(chatID int64, text string) {
+	if h.sendRichMarkdownMsg(chatID, text) {
+		return
+	}
+
 	// Fast path: short message.
 	htmlText := markdownToTelegramHTML(text)
 	if len(htmlText) < maxMessageLen {
@@ -954,6 +969,17 @@ func (h *Handler) sendResponse(chatID int64, text string) {
 type htmlChunk struct {
 	raw  string
 	html string
+}
+
+func (h *Handler) sendRichMarkdownMsg(chatID int64, text string) bool {
+	if !richMarkdownEligible(text) {
+		return false
+	}
+	if err := sendRichMessage(h.bot.Token, chatID, text); err != nil {
+		h.logger.Warn("rich message send failed, falling back to HTML", "chat_id", chatID, "err", err)
+		return false
+	}
+	return true
 }
 
 // sendHTMLWithFallback sends an HTML message with graceful degradation.
