@@ -117,6 +117,32 @@
       align-items: center;
     }
 
+    .route-card {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+    }
+    .route-card:first-child { border-top: 0; padding-top: 0; }
+    .route-card:last-child { padding-bottom: 0; }
+    .route-card__model {
+      margin-top: 3px;
+      color: var(--text);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+    .chip {
+      padding: 2px 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
     .label { font-weight: 700; }
     .value { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 
@@ -147,6 +173,12 @@
       color: var(--text);
     }
 
+    button.ghost {
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+    }
+
     button:disabled, select:disabled { opacity: 0.58; cursor: wait; }
 
     .status-text { color: var(--muted); font-size: 13px; }
@@ -173,10 +205,89 @@
       gap: 8px;
     }
 
+    .sheet-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.28);
+      display: none;
+      z-index: 20;
+    }
+    .sheet-backdrop[data-open="true"] { display: block; }
+
+    .sheet {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 21;
+      max-height: min(86vh, 760px);
+      transform: translateY(105%);
+      transition: transform 160ms ease;
+      background: var(--card);
+      border-top: 1px solid var(--border);
+      border-radius: 14px 14px 0 0;
+      box-shadow: 0 -18px 44px rgba(0,0,0,0.22);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+    .sheet[data-open="true"] { transform: translateY(0); }
+    .sheet__head, .sheet__tools {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sheet__head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .sheet__tools {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+    }
+    .sheet input {
+      min-height: 38px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      padding: 0 10px;
+      font: inherit;
+    }
+    .model-list {
+      overflow-y: auto;
+      padding: 0 14px 16px;
+    }
+    .model-card {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: start;
+    }
+    .model-card__id {
+      font-weight: 760;
+      overflow-wrap: anywhere;
+    }
+    .model-card__meta {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .empty {
+      padding: 24px 0;
+      color: var(--muted);
+      text-align: center;
+    }
+
     @media (max-width: 480px) {
       .metric-grid { grid-template-columns: 1fr; }
-      .route__meta, .mcp-row { grid-template-columns: 1fr; }
+      .route__meta, .mcp-row, .route-card { grid-template-columns: 1fr; }
       .actions__inner { grid-template-columns: 1fr 1fr; }
+      .sheet__tools { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -258,6 +369,22 @@
     </div>
   </footer>
 
+  <div class="sheet-backdrop" id="sheet-backdrop"></div>
+  <section class="sheet" id="model-sheet" aria-hidden="true">
+    <div class="sheet__head">
+      <div>
+        <h2 id="sheet-title">Choose model</h2>
+        <p class="subtle" id="sheet-subtitle">Recommended models</p>
+      </div>
+      <button type="button" class="secondary" id="close-sheet">Close</button>
+    </div>
+    <div class="sheet__tools">
+      <input type="search" id="model-search" placeholder="Search models">
+      <button type="button" class="secondary" id="clear-search">Recommended</button>
+    </div>
+    <div class="model-list" id="model-list"></div>
+  </section>
+
   <script>
     (function () {
       var tg = window.Telegram && window.Telegram.WebApp;
@@ -268,12 +395,13 @@
 
       var initData = tg && tg.initData ? tg.initData : "";
       var fullAdminURL = "{{.FullAdminURL}}";
-      var state = { summary: null, busy: false };
+      var state = { summary: null, busy: false, activeRole: null, activeProvider: "openrouter", searchTimer: null };
 
       function byId(id) { return document.getElementById(id); }
       function text(id, value) { byId(id).textContent = value == null || value === "" ? "-" : String(value); }
       function money(value) { return "$" + Number(value || 0).toFixed(4); }
       function int(value) { return Number(value || 0).toLocaleString(); }
+      function price(value) { return Number(value || 0) === 0 ? "free" : "$" + Number(value || 0).toFixed(2) + "/M"; }
 
       function setHealth(label, className) {
         var pill = byId("health-pill");
@@ -292,40 +420,143 @@
         });
       }
 
+      function confirmSet(label, callback) {
+        var message = "Set " + state.activeRole + " to " + label + "?";
+        if (tg && tg.showConfirm) {
+          tg.showConfirm(message, function (ok) { if (ok) callback(); });
+          return;
+        }
+        if (window.confirm(message)) callback();
+      }
+
       function renderRouting(routes) {
         var root = byId("routing-list");
         root.textContent = "";
         (routes || []).forEach(function (route) {
           var row = document.createElement("div");
-          row.className = "route route__meta";
+          row.className = "route-card";
 
+          var info = document.createElement("div");
           var label = document.createElement("div");
           label.className = "label";
           label.textContent = route.role;
-
           var model = document.createElement("div");
-          model.className = "value";
-          model.textContent = route.model + (route.provider ? " · " + route.provider : "");
-
-          var select = document.createElement("select");
-          (route.available || []).forEach(function (slot) {
-            var option = document.createElement("option");
-            option.value = slot;
-            option.textContent = slot;
-            option.selected = slot === route.slot;
-            select.appendChild(option);
+          model.className = "route-card__model";
+          model.textContent = route.model;
+          var chips = document.createElement("div");
+          chips.className = "chips";
+          [route.provider || "provider", route.slot || "slot"].forEach(function (v) {
+            var chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = v;
+            chips.appendChild(chip);
           });
-          select.addEventListener("change", function () {
-            setRoute(route.role, select.value);
-          });
+          info.appendChild(label);
+          info.appendChild(model);
+          info.appendChild(chips);
 
-          row.appendChild(label);
-          row.appendChild(model);
-          row.appendChild(select);
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost";
+          button.textContent = "Change";
+          button.addEventListener("click", function () { openModelSheet(route); });
+
+          row.appendChild(info);
+          row.appendChild(button);
           root.appendChild(row);
         });
         if (!routes || routes.length === 0) {
           root.textContent = "Routing is not available.";
+        }
+      }
+
+      function openModelSheet(route) {
+        state.activeRole = route.role;
+        state.activeProvider = "openrouter";
+        byId("sheet-title").textContent = "Choose " + route.role + " model";
+        byId("sheet-subtitle").textContent = "Current: " + route.model;
+        byId("model-search").value = "";
+        byId("sheet-backdrop").dataset.open = "true";
+        byId("model-sheet").dataset.open = "true";
+        byId("model-sheet").setAttribute("aria-hidden", "false");
+        loadModels("");
+      }
+
+      function closeModelSheet() {
+        byId("sheet-backdrop").dataset.open = "false";
+        byId("model-sheet").dataset.open = "false";
+        byId("model-sheet").setAttribute("aria-hidden", "true");
+      }
+
+      function loadModels(query) {
+        var root = byId("model-list");
+        root.textContent = "Loading models...";
+        var url = "/tg-admin/api/models?role=" + encodeURIComponent(state.activeRole || "") +
+          "&provider=" + encodeURIComponent(state.activeProvider) +
+          "&limit=30";
+        if (query) url += "&q=" + encodeURIComponent(query);
+        return request(url).then(renderModels).catch(function (err) {
+          root.textContent = err.message;
+        });
+      }
+
+      function renderModels(payload) {
+        var root = byId("model-list");
+        root.textContent = "";
+        byId("sheet-subtitle").textContent = payload.recommended
+          ? "Recommended for " + payload.role
+          : "Search results for " + payload.role;
+        (payload.models || []).forEach(function (model) {
+          var row = document.createElement("div");
+          row.className = "model-card";
+
+          var body = document.createElement("div");
+          var id = document.createElement("div");
+          id.className = "model-card__id";
+          id.textContent = model.id;
+          var meta = document.createElement("div");
+          meta.className = "model-card__meta";
+          meta.textContent = "in " + price(model.prompt_price) +
+            " · out " + price(model.completion_price) +
+            " · ctx " + int(model.context_length);
+          var chips = document.createElement("div");
+          chips.className = "chips";
+          [
+            model.current ? "current" : "",
+            model.recommended ? "recommended" : "",
+            model.tools ? "tools" : "",
+            model.vision ? "vision" : "",
+            model.reasoning ? "reasoning" : "",
+            model.agentic_index ? "agentic " + Math.round(model.agentic_index) : ""
+          ].filter(Boolean).forEach(function (v) {
+            var chip = document.createElement("span");
+            chip.className = "chip";
+            chip.textContent = v;
+            chips.appendChild(chip);
+          });
+          body.appendChild(id);
+          body.appendChild(meta);
+          body.appendChild(chips);
+
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = model.current ? "secondary" : "ghost";
+          button.textContent = model.current ? "Current" : "Set";
+          button.disabled = !!model.current || state.busy;
+          button.addEventListener("click", function () {
+            confirmSet(model.id, function () { setModel(model); });
+          });
+
+          row.appendChild(body);
+          row.appendChild(button);
+          root.appendChild(row);
+        });
+        if (!payload.models || payload.models.length === 0) {
+          root.textContent = "";
+          var empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No models found.";
+          root.appendChild(empty);
         }
       }
 
@@ -387,17 +618,20 @@
           });
       }
 
-      function setRoute(role, slot) {
+      function setModel(model) {
         if (state.busy) return;
         state.busy = true;
-        text("routing-state", "Saving");
-        request("/tg-admin/api/routing", {
+        text("routing-state", "Saving model");
+        request("/tg-admin/api/model", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: role, slot: slot })
+          body: JSON.stringify({ role: state.activeRole, provider: model.provider, model_id: model.id })
         })
           .then(render)
-          .then(function () { text("routing-state", "Saved"); })
+          .then(function () {
+            text("routing-state", "Saved");
+            closeModelSheet();
+          })
           .catch(function (err) {
             text("routing-state", err.message);
             load();
@@ -408,6 +642,17 @@
       }
 
       byId("refresh").addEventListener("click", load);
+      byId("close-sheet").addEventListener("click", closeModelSheet);
+      byId("sheet-backdrop").addEventListener("click", closeModelSheet);
+      byId("clear-search").addEventListener("click", function () {
+        byId("model-search").value = "";
+        loadModels("");
+      });
+      byId("model-search").addEventListener("input", function (event) {
+        clearTimeout(state.searchTimer);
+        var q = event.target.value.trim();
+        state.searchTimer = setTimeout(function () { loadModels(q); }, 220);
+      });
       byId("open-full").addEventListener("click", function () {
         var target = fullAdminURL || "/";
         if (tg && tg.openLink && /^https?:\/\//.test(target)) tg.openLink(target);

@@ -38,6 +38,70 @@ func newTestServer(t *testing.T) *Server {
 	}, router, nil, nil, nil, cfg, slog.Default())
 }
 
+type fakeCapabilityStore struct {
+	byProvider map[string]map[string]llm.Capabilities
+}
+
+func (f fakeCapabilityStore) GetCapabilities(_ context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
+	if byID := f.byProvider[provider]; byID != nil {
+		c, ok := byID[modelID]
+		return c, ok, nil
+	}
+	return llm.Capabilities{}, false, nil
+}
+
+func (f fakeCapabilityStore) PutCapabilities(context.Context, string, string, llm.Capabilities) error {
+	return nil
+}
+
+func (f fakeCapabilityStore) GetAllCapabilities(_ context.Context, provider string) (map[string]llm.Capabilities, error) {
+	out := map[string]llm.Capabilities{}
+	for id, c := range f.byProvider[provider] {
+		out[id] = c
+	}
+	return out, nil
+}
+
+type fakeConfigurableProvider struct {
+	model string
+	caps  llm.Capabilities
+}
+
+func (f *fakeConfigurableProvider) Chat(context.Context, []llm.Message, string, []llm.Tool) (llm.Response, error) {
+	return llm.Response{}, nil
+}
+
+func (f *fakeConfigurableProvider) Name() string { return "fake/" + f.model }
+
+func (f *fakeConfigurableProvider) SetModel(modelID string, caps llm.Capabilities) {
+	f.model = modelID
+	f.caps = caps
+}
+
+func (f *fakeConfigurableProvider) CurrentModel() string { return f.model }
+
+func newTGModelTestServer(t *testing.T) (*Server, *fakeConfigurableProvider) {
+	t.Helper()
+	provider := &fakeConfigurableProvider{model: "qwen/qwen3.5-flash"}
+	router := llm.NewRouter(map[string]llm.Provider{"default-or": provider}, llm.RouterConfig{Default: "default-or"})
+	cfg := &config.Config{
+		Models: config.ModelsConfig{
+			"default-or": config.ModelConfig{Provider: "openrouter", Model: "qwen/qwen3.5-flash"},
+		},
+	}
+	capStore := fakeCapabilityStore{byProvider: map[string]map[string]llm.Capabilities{
+		"openrouter": {
+			"qwen/qwen3.5-flash": {Tools: true, Vision: true, PromptPrice: 0.1, CompletionPrice: 0.4, ContextLength: 64000, Score: 80},
+			"qwen/qwen3.5-plus":  {Tools: true, Vision: true, PromptPrice: 1.0, CompletionPrice: 3.0, ContextLength: 128000, Score: 90},
+		},
+	}}
+	return New(config.AdminAPIConfig{
+		Enabled: true,
+		Listen:  ":0",
+		Token:   "secret-token",
+	}, router, capStore, nil, nil, cfg, slog.Default()), provider
+}
+
 // TestTemplatesParse verifies every registered view renders without panicking
 // against minimal data. Catches template syntax errors at test time.
 func TestTemplatesParse(t *testing.T) {
@@ -170,6 +234,54 @@ func TestTGAdminAPIRejectsNonOwner(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestTGAdminModelsReturnsSearchResults(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=default&q=plus", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Role != "default" || payload.Slot != "default-or" {
+		t.Fatalf("unexpected payload role/slot: %+v", payload)
+	}
+	if len(payload.Models) != 1 || payload.Models[0].ID != "qwen/qwen3.5-plus" {
+		t.Fatalf("unexpected models: %+v", payload.Models)
+	}
+}
+
+func TestTGAdminModelSetUpdatesCurrentRoleSlot(t *testing.T) {
+	s, provider := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	body := strings.NewReader(`{"role":"default","provider":"openrouter","model_id":"qwen/qwen3.5-plus"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model", body)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if provider.CurrentModel() != "qwen/qwen3.5-plus" {
+		t.Fatalf("model = %q, want qwen/qwen3.5-plus", provider.CurrentModel())
+	}
+	if provider.caps.PromptPrice != 1.0 {
+		t.Fatalf("caps not applied: %+v", provider.caps)
 	}
 }
 
