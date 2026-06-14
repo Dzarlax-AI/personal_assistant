@@ -84,7 +84,7 @@ func (f *fakeConfigurableProvider) CurrentModel() string { return f.model }
 func newTGModelTestServer(t *testing.T) (*Server, *fakeConfigurableProvider) {
 	t.Helper()
 	provider := &fakeConfigurableProvider{model: "qwen/qwen3.5-flash"}
-	router := llm.NewRouter(map[string]llm.Provider{"default-or": provider}, llm.RouterConfig{Default: "default-or"})
+	router := llm.NewRouter(map[string]llm.Provider{"default-or": provider}, llm.RouterConfig{Simple: "default-or", Default: "default-or", Classifier: "default-or"})
 	cfg := &config.Config{
 		Models: config.ModelsConfig{
 			"default-or": config.ModelConfig{Provider: "openrouter", Model: "qwen/qwen3.5-flash"},
@@ -92,8 +92,9 @@ func newTGModelTestServer(t *testing.T) (*Server, *fakeConfigurableProvider) {
 	}
 	capStore := fakeCapabilityStore{byProvider: map[string]map[string]llm.Capabilities{
 		"openrouter": {
-			"qwen/qwen3.5-flash": {Tools: true, Vision: true, PromptPrice: 0.1, CompletionPrice: 0.4, ContextLength: 64000, Score: 80},
-			"qwen/qwen3.5-plus":  {Tools: true, Vision: true, PromptPrice: 1.0, CompletionPrice: 3.0, ContextLength: 128000, Score: 90},
+			"qwen/qwen3.5-flash":      {Tools: true, Vision: true, PromptPrice: 0.1, CompletionPrice: 0.4, ContextLength: 64000, Score: 80},
+			"qwen/qwen3.5-flash:free": {Tools: true, Vision: true, PromptPrice: 0, CompletionPrice: 0, ContextLength: 64000, Score: 70},
+			"qwen/qwen3.5-plus":       {Tools: true, Vision: true, PromptPrice: 1.0, CompletionPrice: 3.0, ContextLength: 128000, Score: 90},
 		},
 	}}
 	return New(config.AdminAPIConfig{
@@ -263,6 +264,162 @@ func TestTGAdminModelsReturnsSearchResults(t *testing.T) {
 	}
 }
 
+func TestTGAdminModelsMarksFreeSearchResultsUnverified(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=default&q=:free", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("models len = %d, want 1: %+v", len(payload.Models), payload.Models)
+	}
+	model := payload.Models[0]
+	if !model.Free || model.Policy != "free_unverified" || model.Recommended {
+		t.Fatalf("unexpected free model flags: %+v", model)
+	}
+	if len(model.Warnings) == 0 || !strings.Contains(model.Warnings[0], "validate") {
+		t.Fatalf("missing validation warning: %+v", model.Warnings)
+	}
+}
+
+func TestTGAdminRecommendedModelsAppendFreeCandidatesUnrecommended(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=simple", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var sawRecommended, sawFreeCandidate bool
+	for _, model := range payload.Models {
+		if model.Recommended && !model.Free {
+			sawRecommended = true
+		}
+		if model.Free {
+			sawFreeCandidate = true
+			if model.Recommended || model.Policy != "free_unverified" || model.Source != "free" {
+				t.Fatalf("unexpected free candidate flags: %+v", model)
+			}
+		}
+	}
+	if !sawRecommended || !sawFreeCandidate {
+		t.Fatalf("missing recommended/free candidates: %+v", payload.Models)
+	}
+}
+
+func TestTGAdminModelCheckPersistsFreeModelStatus(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	settings := &fakeSettingsStore{values: map[string]string{}}
+	s.settings = settings
+	s.modelProbe = func(context.Context, string, string, llm.Capabilities) modelCheckStatus {
+		return modelCheckStatus{
+			Status:    "free_verified",
+			CheckedAt: "2026-06-14T12:00:00Z",
+			LatencyMS: 123,
+		}
+	}
+
+	body := strings.NewReader(`{"role":"simple","provider":"openrouter","model_id":"qwen/qwen3.5-flash:free"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model/check", body)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload modelCheckResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.OK || payload.Status.Status != "free_verified" {
+		t.Fatalf("unexpected check response: %+v", payload)
+	}
+	checks := s.loadModelChecks(context.Background())
+	got := checks[modelCheckKey("openrouter", "qwen/qwen3.5-flash:free")]
+	if got.Status != "free_verified" || got.LatencyMS != 123 {
+		t.Fatalf("status not persisted: %+v", checks)
+	}
+}
+
+func TestTGAdminModelCheckRejectsPaidModel(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.settings = &fakeSettingsStore{values: map[string]string{}}
+
+	body := strings.NewReader(`{"role":"simple","provider":"openrouter","model_id":"qwen/qwen3.5-flash"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model/check", body)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestFreeModelCheckCandidatesSkipFreshChecks(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	fresh := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	stale := time.Now().Add(-48 * time.Hour).Format(time.RFC3339)
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "qwen/qwen3.5-flash:free"): {
+			Status:    "free_verified",
+			CheckedAt: fresh,
+		},
+		modelCheckKey("openrouter", "qwen/qwen3.5-old:free"): {
+			Status:    "free_degraded",
+			CheckedAt: stale,
+		},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+	s.capStore = fakeCapabilityStore{byProvider: map[string]map[string]llm.Capabilities{
+		"openrouter": {
+			"qwen/qwen3.5-flash:free": {Tools: true},
+			"qwen/qwen3.5-old:free":   {Tools: true},
+			"qwen/qwen3.5-new:free":   {Tools: true},
+			"qwen/qwen3.5-paid":       {Tools: true, PromptPrice: 0.1},
+		},
+	}}
+
+	candidates := s.freeModelCheckCandidates(context.Background(), "openrouter")
+	if len(candidates) != 2 {
+		t.Fatalf("candidates len = %d, want 2: %+v", len(candidates), candidates)
+	}
+	if candidates[0].modelID != "qwen/qwen3.5-new:free" || candidates[1].modelID != "qwen/qwen3.5-old:free" {
+		t.Fatalf("unexpected candidates order: %+v", candidates)
+	}
+}
+
 func TestTGAdminModelSetUpdatesCurrentRoleSlot(t *testing.T) {
 	s, provider := newTGModelTestServer(t)
 	s.cfgRef.Telegram.BotToken = "123:abc"
@@ -283,6 +440,52 @@ func TestTGAdminModelSetUpdatesCurrentRoleSlot(t *testing.T) {
 	}
 	if provider.caps.PromptPrice != 1.0 {
 		t.Fatalf("caps not applied: %+v", provider.caps)
+	}
+}
+
+func TestTGAdminModelSetRejectsUnverifiedFreeModel(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	s.settings = &fakeSettingsStore{values: map[string]string{}}
+
+	body := strings.NewReader(`{"role":"default","provider":"openrouter","model_id":"qwen/qwen3.5-flash:free"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model", body)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestTGAdminModelSetAllowsVerifiedFreeModel(t *testing.T) {
+	s, provider := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "qwen/qwen3.5-flash:free"): {Status: "free_verified", CheckedAt: time.Now().Format(time.RFC3339)},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	body := strings.NewReader(`{"role":"default","provider":"openrouter","model_id":"qwen/qwen3.5-flash:free"}`)
+	req := httptest.NewRequest(http.MethodPost, "/tg-admin/api/model", body)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if provider.CurrentModel() != "qwen/qwen3.5-flash:free" {
+		t.Fatalf("model = %q, want qwen/qwen3.5-flash:free", provider.CurrentModel())
 	}
 }
 
@@ -326,12 +529,16 @@ type fakeSettingsStore struct {
 	values map[string]string
 }
 
-func (f fakeSettingsStore) GetSetting(_ context.Context, key string) (string, bool, error) {
+func (f *fakeSettingsStore) GetSetting(_ context.Context, key string) (string, bool, error) {
 	v, ok := f.values[key]
 	return v, ok, nil
 }
 
-func (f fakeSettingsStore) PutSetting(context.Context, string, string) error {
+func (f *fakeSettingsStore) PutSetting(_ context.Context, key, value string) error {
+	if f.values == nil {
+		f.values = map[string]string{}
+	}
+	f.values[key] = value
 	return nil
 }
 
@@ -435,7 +642,7 @@ func TestTGAdminMCPReloadUsesSettingsConfig(t *testing.T) {
 	s.cfgRef.Telegram.BotToken = "123:abc"
 	s.cfgRef.Telegram.OwnerChatID = 42
 	serversJSON := `{"memory":{"type":"http","url":"http://memory:8080"}}`
-	s.settings = fakeSettingsStore{values: map[string]string{SettingKeyMCPServers: serversJSON}}
+	s.settings = &fakeSettingsStore{values: map[string]string{SettingKeyMCPServers: serversJSON}}
 	reloader := &fakeMCPReloader{toolCount: 3}
 	s.reloader = reloader
 

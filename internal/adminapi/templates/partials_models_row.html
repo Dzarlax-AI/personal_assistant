@@ -5,6 +5,15 @@
   <tr>
     <td>
       <div class="model-id">{{.ID}}</div>
+      <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
+        {{if .Policy}}<span class="badge badge--neutral">{{.Policy}}</span>{{end}}
+        {{range .Reasons}}<span>{{.}}</span> {{end}}
+      </div>
+      {{if .Warnings}}
+      <div style="margin-top:4px;color:var(--warning, #9a5b00);font-size:0.78rem;">
+        {{range .Warnings}}<span>{{.}}</span> {{end}}
+      </div>
+      {{end}}
       <div class="assign-buttons">
         {{$prov := $.CatalogProvider}}
         {{range $.Slots}}

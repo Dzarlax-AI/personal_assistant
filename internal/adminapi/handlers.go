@@ -48,6 +48,11 @@ type uiModel struct {
 	MarkupPct       float64 // (OR blended - AA blended) / AA blended × 100 — positive means OR charges more
 	EffectivePrompt float64 // 0.9 × prompt + 0.1 × multimodal_slot.prompt for non-vision candidates under roles that route images elsewhere
 	ValuePerDollar  float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
+	Recommended     bool
+	Source          string
+	Policy          string
+	Reasons         []string
+	Warnings        []string
 }
 
 type uiSlotInfo struct {
@@ -419,6 +424,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 				m.ValuePerDollar = q / m.PromptPrice
 			}
 		}
+		annotateModelForRole(&m, "", "catalog")
 		models = append(models, m)
 	}
 	asc := sortDir == "asc"

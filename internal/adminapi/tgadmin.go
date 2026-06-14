@@ -57,22 +57,30 @@ type tgAdminRoute struct {
 }
 
 type tgAdminModel struct {
-	ID              string  `json:"id"`
-	Provider        string  `json:"provider"`
-	PromptPrice     float64 `json:"prompt_price"`
-	CompletionPrice float64 `json:"completion_price"`
-	ContextLength   int     `json:"context_length"`
-	Vision          bool    `json:"vision"`
-	Tools           bool    `json:"tools"`
-	Reasoning       bool    `json:"reasoning"`
-	Free            bool    `json:"free"`
-	Score           float64 `json:"score"`
-	AgenticIndex    float64 `json:"agentic_index"`
-	SpeedTPS        float64 `json:"speed_tps"`
-	TTFT            float64 `json:"ttft"`
-	ValuePerDollar  float64 `json:"value_per_dollar"`
-	Recommended     bool    `json:"recommended"`
-	Current         bool    `json:"current"`
+	ID              string   `json:"id"`
+	Provider        string   `json:"provider"`
+	PromptPrice     float64  `json:"prompt_price"`
+	CompletionPrice float64  `json:"completion_price"`
+	ContextLength   int      `json:"context_length"`
+	Vision          bool     `json:"vision"`
+	Tools           bool     `json:"tools"`
+	Reasoning       bool     `json:"reasoning"`
+	Free            bool     `json:"free"`
+	Score           float64  `json:"score"`
+	AgenticIndex    float64  `json:"agentic_index"`
+	SpeedTPS        float64  `json:"speed_tps"`
+	TTFT            float64  `json:"ttft"`
+	ValuePerDollar  float64  `json:"value_per_dollar"`
+	Recommended     bool     `json:"recommended"`
+	Current         bool     `json:"current"`
+	Source          string   `json:"source,omitempty"`
+	Policy          string   `json:"policy,omitempty"`
+	Reasons         []string `json:"reasons,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+	CheckStatus     string   `json:"check_status,omitempty"`
+	CheckedAt       string   `json:"checked_at,omitempty"`
+	CheckLatencyMS  int64    `json:"check_latency_ms,omitempty"`
+	CheckError      string   `json:"check_error,omitempty"`
 }
 
 type tgAdminModelsResponse struct {
@@ -139,6 +147,8 @@ func (s *Server) handleTGAdminRouter(w http.ResponseWriter, r *http.Request) {
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminModels)).ServeHTTP(w, r)
 	case "/tg-admin/api/model":
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminModelSet)).ServeHTTP(w, r)
+	case "/tg-admin/api/model/check":
+		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminModelCheck)).ServeHTTP(w, r)
 	case "/tg-admin/api/routing":
 		s.requireTGAdmin(http.HandlerFunc(s.handleTGAdminRoutingSet)).ServeHTTP(w, r)
 	case "/tg-admin/api/stats":
@@ -395,6 +405,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 
 	var models []uiModel
 	recommendedMode := false
+	checks := s.loadModelChecks(ctx5)
 	if query == "" && provider == "openrouter" {
 		var visionFallbackPrompt float64
 		cfg := s.router.GetConfig()
@@ -410,7 +421,8 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 		if p, ok := rolePresets[role]; ok {
 			resp.Description = p.Description
 		}
-		recommendedMode = len(models) > 0
+		models = appendFreeCandidates(models, tgAdminBrowseModels(allCaps, aaModels, ":free", role), role)
+		recommendedMode = hasRecommendedModel(models)
 	}
 	if len(models) == 0 {
 		models = tgAdminBrowseModels(allCaps, aaModels, query, role)
@@ -421,7 +433,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 	}
 	resp.Models = make([]tgAdminModel, 0, len(models))
 	for _, m := range models {
-		resp.Models = append(resp.Models, tgModelFromUI(provider, m, current, recommendedMode))
+		resp.Models = append(resp.Models, tgModelFromUI(provider, m, current, checks))
 	}
 	if currentProvider != "" && currentProvider != provider && query == "" {
 		resp.Description = strings.TrimSpace(resp.Description + " Current role uses " + currentProvider + "; choosing a model here will retarget this role's slot.")
@@ -468,6 +480,7 @@ func tgAdminBrowseModels(allCaps map[string]llm.Capabilities, aaModels map[strin
 				m.ValuePerDollar = q / m.PromptPrice
 			}
 		}
+		annotateModelForRole(&m, role, "catalog")
 		models = append(models, m)
 	}
 	sort.Slice(models, func(i, j int) bool {
@@ -497,7 +510,51 @@ func tgAdminBrowseModels(allCaps map[string]llm.Capabilities, aaModels map[strin
 	return models
 }
 
-func tgModelFromUI(provider string, m uiModel, current string, recommended bool) tgAdminModel {
+func appendFreeCandidates(models, free []uiModel, role string) []uiModel {
+	switch role {
+	case "simple", "classifier":
+	default:
+		return models
+	}
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		seen[m.ID] = true
+	}
+	added := 0
+	for _, m := range free {
+		if !m.Free || seen[m.ID] {
+			continue
+		}
+		m.Recommended = false
+		annotateModelForRole(&m, role, "free")
+		models = append(models, m)
+		seen[m.ID] = true
+		added++
+		if added >= 3 {
+			break
+		}
+	}
+	return models
+}
+
+func hasRecommendedModel(models []uiModel) bool {
+	for _, m := range models {
+		if m.Recommended {
+			return true
+		}
+	}
+	return false
+}
+
+func tgModelFromUI(provider string, m uiModel, current string, checks map[string]modelCheckStatus) tgAdminModel {
+	check := checks[modelCheckKey(provider, m.ID)]
+	if check.Status != "" && m.Free && check.Status != "free_unverified" {
+		m.Policy = check.Status
+		if check.Status == "free_verified" {
+			m.Warnings = removeWarningContaining(m.Warnings, "validate availability")
+			m.Reasons = append(m.Reasons, "probe passed")
+		}
+	}
 	return tgAdminModel{
 		ID:              m.ID,
 		Provider:        provider,
@@ -513,9 +570,63 @@ func tgModelFromUI(provider string, m uiModel, current string, recommended bool)
 		SpeedTPS:        m.SpeedTPS,
 		TTFT:            m.TTFT,
 		ValuePerDollar:  m.ValuePerDollar,
-		Recommended:     recommended,
+		Recommended:     m.Recommended,
 		Current:         m.ID == current,
+		Source:          m.Source,
+		Policy:          m.Policy,
+		Reasons:         m.Reasons,
+		Warnings:        m.Warnings,
+		CheckStatus:     check.Status,
+		CheckedAt:       check.CheckedAt,
+		CheckLatencyMS:  check.LatencyMS,
+		CheckError:      check.Error,
 	}
+}
+
+func removeWarningContaining(warnings []string, needle string) []string {
+	out := warnings[:0]
+	for _, warning := range warnings {
+		if strings.Contains(warning, needle) {
+			continue
+		}
+		out = append(out, warning)
+	}
+	return out
+}
+
+func (s *Server) handleTGAdminModelCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req modelCheckRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req.Role = strings.TrimSpace(req.Role)
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.ModelID = strings.TrimSpace(req.ModelID)
+	if req.Provider == "" {
+		req.Provider = "openrouter"
+	}
+	if req.ModelID == "" {
+		http.Error(w, "model_id required", http.StatusBadRequest)
+		return
+	}
+	if !isFreeVariant(req.ModelID) {
+		http.Error(w, "only free models can be checked here", http.StatusBadRequest)
+		return
+	}
+	caps := s.lookupCapsFor(r.Context(), req.Provider, req.ModelID)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	status := s.probeModel(ctx, req.Provider, req.ModelID, caps)
+	if err := s.saveModelCheck(ctx, req.Provider, req.ModelID, status); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, modelCheckResponse{OK: status.Status == "free_verified", Model: req.ModelID, Status: status})
 }
 
 func (s *Server) handleTGAdminModelSet(w http.ResponseWriter, r *http.Request) {
@@ -541,6 +652,13 @@ func (s *Server) handleTGAdminModelSet(w http.ResponseWriter, r *http.Request) {
 	if req.ModelID == "" {
 		http.Error(w, "model_id required", http.StatusBadRequest)
 		return
+	}
+	if isFreeVariant(req.ModelID) {
+		check := s.modelCheckStatus(r.Context(), req.Provider, req.ModelID)
+		if check.Status != "free_verified" {
+			http.Error(w, "free model must pass check before routing", http.StatusBadRequest)
+			return
+		}
 	}
 	slot, ok := s.tgRoleSlot(req.Role)
 	if !ok {

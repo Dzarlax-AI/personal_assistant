@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 
@@ -174,7 +175,7 @@ var rolePresets = map[string]rolePreset{
 	},
 
 	"classifier": {
-		Description: "≤ $0.1/M prompt, multilingual, no :free (rate-limited on OR). Pareto frontier on (1/TTFT, prompt price) when speed data available, else (AA Intelligence Index, prompt price). Local Ollama stays the primary recommendation.",
+		Description: "≤ $0.1/M prompt, multilingual, verified paid path for automatic recommendations. Free variants are shown separately until checked. Pareto frontier on (1/TTFT, prompt price) when speed data is available, else (AA Intelligence Index, prompt price). Local Ollama stays the primary recommendation.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
@@ -303,8 +304,81 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 		if p > 0 && q > 0 {
 			frontier[i].ValuePerDollar = q / p
 		}
+		frontier[i].Recommended = true
+		annotateModelForRole(&frontier[i], role, "preset")
 	}
 	return frontier
+}
+
+func annotateModelForRole(m *uiModel, role, source string) {
+	if source == "" {
+		source = "catalog"
+	}
+	m.Source = source
+	if m.Recommended {
+		m.Policy = "recommended"
+	} else if m.Free {
+		m.Policy = "free_unverified"
+	} else if m.Policy == "" {
+		m.Policy = "candidate"
+	}
+
+	reasons := make([]string, 0, 6)
+	warnings := make([]string, 0, 4)
+	if m.Tools {
+		reasons = append(reasons, "tool calling")
+	} else if role != "compaction" {
+		warnings = append(warnings, "no tool calling")
+	}
+	if m.Vision {
+		reasons = append(reasons, "vision")
+	} else if usesVisionFallback(role) && m.EffectivePrompt > 0 {
+		warnings = append(warnings, "image traffic uses multimodal fallback")
+	}
+	if m.Reasoning {
+		reasons = append(reasons, "reasoning")
+	}
+	if m.ContextLength > 0 {
+		reasons = append(reasons, fmt.Sprintf("ctx %s", shortContextLabel(m.ContextLength)))
+	}
+	if m.AgenticIndex > 0 {
+		reasons = append(reasons, fmt.Sprintf("AA agentic %.0f", m.AgenticIndex))
+	} else if m.Score > 0 {
+		reasons = append(reasons, fmt.Sprintf("AA intelligence %.0f", m.Score))
+	} else {
+		warnings = append(warnings, "no AA benchmark data")
+	}
+	if m.ValuePerDollar > 0 {
+		reasons = append(reasons, fmt.Sprintf("value %.0f/$", m.ValuePerDollar))
+	}
+	if m.Free {
+		warnings = append(warnings, "free model: validate availability before routing")
+	}
+	m.Reasons = uniqueStrings(reasons)
+	m.Warnings = uniqueStrings(warnings)
+}
+
+func shortContextLabel(n int) string {
+	if n >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%dk", n/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func uniqueStrings(in []string) []string {
+	out := in[:0]
+	seen := make(map[string]bool, len(in))
+	for _, v := range in {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 // valueLeader returns the frontier model with the best quality/price ratio,

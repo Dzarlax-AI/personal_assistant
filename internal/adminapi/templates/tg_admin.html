@@ -303,6 +303,18 @@
       font-size: 12px;
       overflow-wrap: anywhere;
     }
+    .model-card__note {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .model-card__warn {
+      margin-top: 5px;
+      color: var(--warn);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .empty {
       padding: 24px 0;
       color: var(--muted);
@@ -571,6 +583,7 @@
           [
             model.current ? "current" : "",
             model.recommended ? "recommended" : "",
+            model.policy || "",
             model.tools ? "tools" : "",
             model.vision ? "vision" : "",
             model.reasoning ? "reasoning" : "",
@@ -584,14 +597,36 @@
           body.appendChild(id);
           body.appendChild(meta);
           body.appendChild(chips);
+          if (model.reasons && model.reasons.length) {
+            var reasons = document.createElement("div");
+            reasons.className = "model-card__note";
+            reasons.textContent = model.reasons.slice(0, 4).join(" · ");
+            body.appendChild(reasons);
+          }
+          if (model.warnings && model.warnings.length) {
+            var warnings = document.createElement("div");
+            warnings.className = "model-card__warn";
+            warnings.textContent = model.warnings.slice(0, 2).join(" · ");
+            body.appendChild(warnings);
+          }
+          if (model.check_status) {
+            var check = document.createElement("div");
+            check.className = model.check_status === "free_verified" ? "model-card__note" : "model-card__warn";
+            check.textContent = model.check_status +
+              (model.check_latency_ms ? " · " + model.check_latency_ms + " ms" : "") +
+              (model.check_error ? " · " + model.check_error : "");
+            body.appendChild(check);
+          }
 
           var button = document.createElement("button");
           button.type = "button";
+          var needsCheck = model.free && model.check_status !== "free_verified";
           button.className = model.current ? "secondary" : "ghost";
-          button.textContent = model.current ? "Current" : "Set";
+          button.textContent = model.current ? "Current" : (needsCheck ? "Check" : "Set");
           button.disabled = !!model.current || state.busy;
           button.addEventListener("click", function () {
-            confirmSet(model.id, function () { setModel(model); });
+            if (needsCheck) checkModel(model);
+            else confirmSet(model.id, function () { setModel(model); });
           });
 
           row.appendChild(body);
@@ -731,6 +766,27 @@
           .catch(function (err) {
             text("routing-state", err.message);
             load();
+          })
+          .finally(function () {
+            state.busy = false;
+          });
+      }
+
+      function checkModel(model) {
+        if (state.busy) return;
+        state.busy = true;
+        text("routing-state", "Checking model");
+        request("/tg-admin/api/model/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: state.activeRole, provider: model.provider, model_id: model.id })
+        })
+          .then(function (payload) {
+            text("routing-state", payload.status && payload.status.status ? payload.status.status : "Checked");
+            return loadModels(byId("model-search").value.trim());
+          })
+          .catch(function (err) {
+            text("routing-state", err.message);
           })
           .finally(function () {
             state.busy = false;

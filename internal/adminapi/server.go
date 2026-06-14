@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"telegram-agent/internal/agent"
@@ -44,9 +45,12 @@ type Server struct {
 	reloader   MCPReloader       // may be nil (local dev / tests)
 	agent      ChatAgent         // may be nil (admin UI only, no chat tab)
 	opsAgent   TGOperationalAgent
+	modelProbe modelProbeFunc
 	logger     *slog.Logger
 
-	httpSrv *http.Server
+	httpSrv           *http.Server
+	modelChecksCancel context.CancelFunc
+	modelChecksOnce   sync.Once
 }
 
 // SetMCPReloader wires the hot-reload hook so saving/deleting MCP servers in
@@ -102,11 +106,15 @@ func (s *Server) Start() error {
 			s.logger.Error("admin API server stopped", "err", err)
 		}
 	}()
+	s.startModelCheckScheduler()
 	return nil
 }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.modelChecksCancel != nil {
+		s.modelChecksCancel()
+	}
 	if s.httpSrv == nil {
 		return nil
 	}
