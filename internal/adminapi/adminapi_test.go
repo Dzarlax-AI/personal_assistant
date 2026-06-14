@@ -293,6 +293,40 @@ func TestTGAdminModelsMarksFreeSearchResultsUnverified(t *testing.T) {
 	}
 }
 
+func TestTGAdminModelsHidesBlockedFreeSearchResults(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "qwen/qwen3.5-flash:free"): {
+			Status:    "free_blocked",
+			CheckedAt: time.Now().Format(time.RFC3339),
+			Error:     "api error (HTTP 404): This model is unavailable for free. The paid version is available now.",
+		},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=default&q=:free", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 0 {
+		t.Fatalf("blocked free models should be hidden: %+v", payload.Models)
+	}
+}
+
 func TestTGAdminRecommendedModelsAppendFreeCandidatesUnrecommended(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	s.cfgRef.Telegram.BotToken = "123:abc"
@@ -324,6 +358,42 @@ func TestTGAdminRecommendedModelsAppendFreeCandidatesUnrecommended(t *testing.T)
 	}
 	if !sawRecommended || !sawFreeCandidate {
 		t.Fatalf("missing recommended/free candidates: %+v", payload.Models)
+	}
+}
+
+func TestTGAdminRecommendedModelsHideBlockedFreeCandidates(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	s.cfgRef.Telegram.BotToken = "123:abc"
+	s.cfgRef.Telegram.OwnerChatID = 42
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "qwen/qwen3.5-flash:free"): {
+			Status:    "free_blocked",
+			CheckedAt: time.Now().Format(time.RFC3339),
+			Error:     "api error (HTTP 404): This model is unavailable for free. The paid version is available now.",
+		},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	req := httptest.NewRequest(http.MethodGet, "/tg-admin/api/models?role=simple", nil)
+	req.Header.Set("X-Telegram-Init-Data", signedTGInitData(t, "123:abc", 42, time.Now()))
+	rec := httptest.NewRecorder()
+	s.handleTGAdminRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload tgAdminModelsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range payload.Models {
+		if model.ID == "qwen/qwen3.5-flash:free" {
+			t.Fatalf("blocked free candidate should be hidden: %+v", payload.Models)
+		}
 	}
 }
 

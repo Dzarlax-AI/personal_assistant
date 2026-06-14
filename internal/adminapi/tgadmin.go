@@ -431,6 +431,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 	if len(models) == 0 {
 		models = tgAdminBrowseModels(allCaps, aaModels, query, role)
 	}
+	models = filterBlockedFreeModels(models, provider, checks)
 	resp.Recommended = recommendedMode
 	if len(models) > limit {
 		models = models[:limit]
@@ -512,6 +513,21 @@ func tgAdminBrowseModels(allCaps map[string]llm.Capabilities, aaModels map[strin
 		return models[i].ID < models[j].ID
 	})
 	return models
+}
+
+func filterBlockedFreeModels(models []uiModel, provider string, checks map[string]modelCheckStatus) []uiModel {
+	if len(models) == 0 || len(checks) == 0 {
+		return models
+	}
+	out := models[:0]
+	for _, m := range models {
+		check := checks[modelCheckKey(provider, m.ID)]
+		if m.Free && check.Status == "free_blocked" {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func appendFreeCandidates(models, free []uiModel, role string) []uiModel {
