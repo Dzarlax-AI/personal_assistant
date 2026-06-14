@@ -35,11 +35,26 @@ var specialisedCoderRegex = regexp.MustCompile(`-coder(-|$|:)`)
 
 var specialisedVisionRegex = regexp.MustCompile(`-vl-`)
 
+var unstableVariantRegex = regexp.MustCompile(
+	`(^|[-/:])(preview|beta|exp|experimental|customtools)([-/:]|$)`,
+)
+
+// lightweightDefaultRegex catches models that are good L1/classifier
+// candidates but too small or latency-oriented for the default workhorse role.
+// Do not match every "flash" model: Gemini Flash-class models can still be a
+// reasonable default, while "flash-lite"/"mini"/small-B variants usually are
+// not.
+var lightweightDefaultRegex = regexp.MustCompile(
+	`(^|[-/:])(flash-lite|lite|mini|small|nano)([-/:]|$)|` +
+		`(^|[-/:])([1-9]|1[0-4])b([-/:]|$)|` +
+		`^qwen/qwen3(\.[0-9]+)?-flash([-/:]|$)`,
+)
+
 // thinkingRegex matches model ids that are actually frontier reasoners — the
 // `reasoning: true` capability flag alone is not enough (8B models also set
 // it just because the API accepts a reasoning parameter).
 var thinkingRegex = regexp.MustCompile(
-	`(-thinking|:thinking|/qwq|/deepseek-r[0-9]|-r1(-|$)|-reasoner)`,
+	`(-thinking|:thinking|/qwq|/deepseek-r[0-9]|-r1(-|$)|-reasoner|^x-ai/grok-(3-mini|4))`,
 )
 
 // paretoAxes returns (quality, price) for a model under a given role.
@@ -79,6 +94,10 @@ func effectivePromptOf(m uiModel) float64 {
 	return m.PromptPrice
 }
 
+func effectiveBlendedPriceOf(m uiModel) float64 {
+	return orBlendedPrice(effectivePromptOf(m), m.CompletionPrice)
+}
+
 // usesVisionFallback returns true for roles where non-vision traffic routes
 // image messages to the multimodal slot (so the role's candidates should be
 // penalised for missing vision).
@@ -102,62 +121,68 @@ func inverseTTFT(m uiModel) float64 {
 
 var rolePresets = map[string]rolePreset{
 	"simple": {
-		Description: "tools + multilingual, ≤ $0.2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, prompt price).",
+		Description: "tools + multilingual, ≤ $0.2/M prompt, ctx ≥ 32k. Pareto frontier on (1/TTFT, blended cost) when speed data is available, else (AA Agentic Index, blended cost).",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				c.Tools &&
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 0.2
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
+		// Axes selected dynamically in applyPreset (see simpleAxes).
+		Axes: nil,
 	},
 
 	"default": {
-		Description: "tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, prompt price).",
+		Description: "workhorse tools + multilingual, excludes L1/classifier-sized models, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Agentic Index, blended cost).",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
+				!lightweightDefaultRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				c.Tools &&
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) },
 	},
 
 	"complex": {
-		Description: "frontier reasoners (thinking/r1/qwq) with tools + multilingual, ≤ $5/M prompt, ctx ≥ 64k. Pareto frontier on (AA Agentic Index, prompt price). Claude via bridge is preferred when configured.",
+		Description: "frontier reasoners (thinking/r1/qwq/grok) with tools + multilingual, ≤ $5/M prompt, ctx ≥ 64k. Pareto frontier on (AA Agentic Index, blended cost). Claude via bridge is preferred when configured.",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				thinkingRegex.MatchString(id) &&
 				c.Tools && c.Reasoning &&
 				c.ContextLength >= 64000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 5.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectivePromptOf(m) },
+		Axes: func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) },
 	},
 
 	"multimodal": {
-		Description: "vision + tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Intelligence Index, prompt price).",
+		Description: "vision + tools + multilingual, ≤ $2/M prompt, ctx ≥ 32k. Pareto frontier on (AA Intelligence Index, blended cost).",
 		Filter: func(c llm.Capabilities, id string, aa llm.AAModelInfo) bool {
 			return multilingualRegex.MatchString(id) &&
 				!excludedVendorsRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				c.Vision && c.Tools &&
 				c.ContextLength >= 32000 &&
 				c.PromptPrice > 0 && c.PromptPrice <= 2.0
 		},
-		Axes: func(m uiModel) (float64, float64) { return m.Score, m.PromptPrice },
+		Axes: func(m uiModel) (float64, float64) { return m.Score, effectiveBlendedPriceOf(m) },
 	},
 
 	"compaction": {
@@ -167,6 +192,7 @@ var rolePresets = map[string]rolePreset{
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				c.ContextLength >= 64000 &&
 				c.CompletionPrice > 0 && c.CompletionPrice <= 2.0
@@ -181,6 +207,7 @@ var rolePresets = map[string]rolePreset{
 				!excludedVendorsRegex.MatchString(id) &&
 				!specialisedCoderRegex.MatchString(id) &&
 				!specialisedVisionRegex.MatchString(id) &&
+				!isUnstableVariant(id) &&
 				!isFreeVariant(id) &&
 				c.PromptPrice > 0 && c.PromptPrice <= 0.1
 		},
@@ -196,6 +223,10 @@ func isFreeVariant(modelID string) bool {
 	return len(modelID) > 5 && modelID[len(modelID)-5:] == ":free"
 }
 
+func isUnstableVariant(modelID string) bool {
+	return unstableVariantRegex.MatchString(modelID)
+}
+
 // classifierAxes picks (1/TTFT, price) when at least one candidate has TTFT
 // data, otherwise falls back to (Score, price). Mixing two quality scales in
 // the same Pareto frontier would be meaningless, so we pick one globally.
@@ -206,6 +237,32 @@ func classifierAxes(candidates []uiModel) paretoAxes {
 		}
 	}
 	return func(m uiModel) (float64, float64) { return m.Score, m.PromptPrice }
+}
+
+// simpleAxes keeps L1 recommendations distinct from default: when AA speed
+// data exists, startup latency is the quality axis. Without TTFT data, fall
+// back to agentic quality so new/untested models are not promoted blindly.
+func simpleAxes(candidates []uiModel) paretoAxes {
+	for _, m := range candidates {
+		if m.TTFT > 0 {
+			return func(m uiModel) (float64, float64) { return inverseTTFT(m), effectiveBlendedPriceOf(m) }
+		}
+	}
+	return func(m uiModel) (float64, float64) { return bestAgentic(m), effectiveBlendedPriceOf(m) }
+}
+
+func axesForPreset(role string, preset rolePreset, candidates []uiModel) paretoAxes {
+	if preset.Axes != nil {
+		return preset.Axes
+	}
+	switch role {
+	case "simple":
+		return simpleAxes(candidates)
+	case "classifier":
+		return classifierAxes(candidates)
+	default:
+		return nil
+	}
 }
 
 // paretoFrontier keeps only non-dominated models. A model is also excluded
@@ -239,6 +296,94 @@ func paretoFrontier(models []uiModel, axes paretoAxes) []uiModel {
 		}
 	}
 	return out
+}
+
+func appendNearFrontierAlternatives(frontier, candidates []uiModel, axes paretoAxes, role string, limit int) []uiModel {
+	if len(candidates) == 0 || axes == nil || limit <= 0 {
+		return frontier
+	}
+	seen := make(map[string]bool, len(frontier))
+	topQuality := 0.0
+	for _, m := range candidates {
+		q, _ := axes(m)
+		if q > topQuality {
+			topQuality = q
+		}
+	}
+	if topQuality <= 0 {
+		return frontier
+	}
+	for _, m := range frontier {
+		seen[m.ID] = true
+	}
+	alts := make([]uiModel, 0, len(candidates))
+	for _, m := range candidates {
+		if seen[m.ID] {
+			continue
+		}
+		q, p := axes(m)
+		if q <= 0 || p <= 0 || q < 0.50*topQuality {
+			continue
+		}
+		m.Recommended = false
+		if p > 0 {
+			m.ValuePerDollar = q / p
+		}
+		annotateModelForRole(&m, role, "near_frontier")
+		alts = append(alts, m)
+	}
+	sort.Slice(alts, func(i, j int) bool {
+		qi, pi := axes(alts[i])
+		qj, pj := axes(alts[j])
+		if qi != qj {
+			return qi > qj
+		}
+		if pi != pj {
+			return pi < pj
+		}
+		return alts[i].ID < alts[j].ID
+	})
+	if len(alts) > limit {
+		alts = alts[:limit]
+	}
+	out := append(frontier, alts...)
+	return appendUntestedAlternatives(out, candidates, axes, role, 2)
+}
+
+func appendUntestedAlternatives(models, candidates []uiModel, axes paretoAxes, role string, limit int) []uiModel {
+	if limit <= 0 {
+		return models
+	}
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		seen[m.ID] = true
+	}
+	untested := make([]uiModel, 0, len(candidates))
+	for _, m := range candidates {
+		if seen[m.ID] {
+			continue
+		}
+		q, _ := axes(m)
+		if q > 0 {
+			continue
+		}
+		m.Recommended = false
+		annotateModelForRole(&m, role, "untested")
+		untested = append(untested, m)
+	}
+	sort.Slice(untested, func(i, j int) bool {
+		if untested[i].ContextLength != untested[j].ContextLength {
+			return untested[i].ContextLength > untested[j].ContextLength
+		}
+		if untested[i].PromptPrice != untested[j].PromptPrice {
+			return untested[i].PromptPrice < untested[j].PromptPrice
+		}
+		return untested[i].ID < untested[j].ID
+	})
+	if len(untested) > limit {
+		untested = untested[:limit]
+	}
+	return append(models, untested...)
 }
 
 // applyPreset returns the Pareto-optimal models for the role, sorted by
@@ -283,9 +428,9 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 		}
 		candidates = append(candidates, m)
 	}
-	axes := preset.Axes
-	if axes == nil && role == "classifier" {
-		axes = classifierAxes(candidates)
+	axes := axesForPreset(role, preset, candidates)
+	if axes == nil {
+		return nil
 	}
 	frontier := paretoFrontier(candidates, axes)
 	sort.Slice(frontier, func(i, j int) bool {
@@ -307,7 +452,7 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 		frontier[i].Recommended = true
 		annotateModelForRole(&frontier[i], role, "preset")
 	}
-	return frontier
+	return appendNearFrontierAlternatives(frontier, candidates, axes, role, 4)
 }
 
 func annotateModelForRole(m *uiModel, role, source string) {

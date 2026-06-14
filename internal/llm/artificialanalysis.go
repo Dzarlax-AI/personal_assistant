@@ -18,18 +18,18 @@ var aaHTTPClient = &http.Client{Timeout: 20 * time.Second}
 // AAModelInfo holds normalized AA data for a single model, keyed by the
 // OR-compatible slug (dots replaced with dashes in version segments).
 type AAModelInfo struct {
-	AASlug        string  `json:"aa_slug"`
-	CreatorSlug   string  `json:"creator_slug"`
-	Score         float64 `json:"score,omitempty"`           // Intelligence Index
-	CodingIndex   float64 `json:"coding_index,omitempty"`    // Coding Index
-	MathIndex     float64 `json:"math_index,omitempty"`      // Math Index
-	AgenticIndex  float64 `json:"agentic_index,omitempty"`   // Agentic Index
-	SpeedTPS      float64 `json:"speed_tps,omitempty"`       // median output tokens/sec
-	TTFT          float64 `json:"ttft_s,omitempty"`          // median time-to-first-token, seconds
-	TTFA          float64 `json:"ttfa_s,omitempty"`          // median time-to-first-answer-token, seconds
-	PriceInput    float64 `json:"price_input_1m,omitempty"`  // USD / 1M input tokens
-	PriceOutput   float64 `json:"price_output_1m,omitempty"` // USD / 1M output tokens
-	PriceBlended  float64 `json:"price_blended_1m,omitempty"` // AA's blended 3:1 input/output reference price
+	AASlug       string  `json:"aa_slug"`
+	CreatorSlug  string  `json:"creator_slug"`
+	Score        float64 `json:"score,omitempty"`            // Intelligence Index
+	CodingIndex  float64 `json:"coding_index,omitempty"`     // Coding Index
+	MathIndex    float64 `json:"math_index,omitempty"`       // Math Index
+	AgenticIndex float64 `json:"agentic_index,omitempty"`    // Agentic Index
+	SpeedTPS     float64 `json:"speed_tps,omitempty"`        // median output tokens/sec
+	TTFT         float64 `json:"ttft_s,omitempty"`           // median time-to-first-token, seconds
+	TTFA         float64 `json:"ttfa_s,omitempty"`           // median time-to-first-answer-token, seconds
+	PriceInput   float64 `json:"price_input_1m,omitempty"`   // USD / 1M input tokens
+	PriceOutput  float64 `json:"price_output_1m,omitempty"`  // USD / 1M output tokens
+	PriceBlended float64 `json:"price_blended_1m,omitempty"` // AA's blended 3:1 input/output reference price
 }
 
 // AACache is the kv_settings blob stored under aaSettingsKey.
@@ -163,6 +163,7 @@ func LoadAACache(ctx context.Context, settings SettingsStore) (*AACache, error) 
 // creatorAliases maps OR creator prefixes that differ from AA's.
 var creatorAliases = map[string]string{
 	"moonshotai": "moonshot",
+	"x-ai":       "xai",
 }
 
 // MergeAAScores overlays AA Intelligence Index scores onto an existing

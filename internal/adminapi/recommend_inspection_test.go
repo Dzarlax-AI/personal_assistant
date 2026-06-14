@@ -51,13 +51,10 @@ func TestPresetInspection(t *testing.T) {
 		results := applyPreset(caps, cache.Models, role, visionFallbackPrompt)
 
 		var lines []string
-		lines = append(lines, fmt.Sprintf("\n=== %s (%d candidates on Pareto frontier) ===", role, len(results)))
+		lines = append(lines, fmt.Sprintf("\n=== %s (%d preset results: recommended + alternatives) ===", role, len(results)))
 		lines = append(lines, preset.Description)
 
-		axes := preset.Axes
-		if axes == nil && role == "classifier" {
-			axes = classifierAxes(results)
-		}
+		axes := axesForPreset(role, preset, results)
 		if vl := valueLeader(results, axes, 0.5); vl != nil {
 			topQ, topP := axes(results[0])
 			vQ, vP := axes(*vl)

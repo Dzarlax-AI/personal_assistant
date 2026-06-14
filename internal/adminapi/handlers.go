@@ -393,10 +393,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		// Knee-point value leader: best quality/price among frontier models
 		// with quality ≥ 50% of top. Skipped when the top model is already
 		// the value leader.
-		axes := p.Axes
-		if axes == nil && preset == "classifier" {
-			axes = classifierAxes(models)
-		}
+		axes := axesForPreset(preset, p, models)
 		if axes != nil {
 			if vl := valueLeader(models, axes, 0.5); vl != nil {
 				topQ, topP := axes(models[0])
@@ -599,6 +596,9 @@ func attachModelTelemetry(models []uiModel, telemetry map[string]modelTelemetry)
 // AAModelInfo record. Used by both the preset path and the browse path so
 // they share one formula for Think time and Markup %.
 func enrichFromAA(m *uiModel, aa llm.AAModelInfo) {
+	if aa.Score > 0 {
+		m.Score = aa.Score
+	}
 	m.CodingIndex = aa.CodingIndex
 	m.AgenticIndex = aa.AgenticIndex
 	m.SpeedTPS = aa.SpeedTPS
