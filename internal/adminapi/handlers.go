@@ -57,6 +57,7 @@ type uiModel struct {
 	Reasons         []string
 	Warnings        []string
 	Telemetry       modelTelemetry
+	Market          llm.OpenRouterMarketSignal
 }
 
 type modelTelemetry struct {
@@ -330,6 +331,16 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if s.settings != nil {
+		if market, marketErr := llm.FetchOpenRouterRankings(ctx); marketErr != nil {
+			s.logger.Warn("openrouter rankings refresh failed", "err", marketErr)
+		} else {
+			s.logger.Info("openrouter rankings refreshed", "models", len(market))
+			if storeErr := llm.StoreOpenRouterRankingsCache(ctx, s.settings, market); storeErr != nil {
+				s.logger.Warn("openrouter rankings cache store failed", "err", storeErr)
+			}
+		}
+	}
 
 	if s.capStore != nil {
 		for id, c := range caps {
@@ -370,6 +381,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			aaModels = cache.Models
 		}
 	}
+	marketSignals := s.loadMarketSignals(ctx5, catalogProv)
 	overrides := loadModelOverrides(ctx5, s.settings)
 
 	// Preset path — pre-filter + pre-sort via the role's preset. Checkbox
@@ -391,6 +403,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		models := applyPreset(allCaps, aaModels, preset, visionFallbackPrompt)
 		models = appendAllowedOverrideCandidates(models, allCaps, aaModels, catalogProv, preset, overrides)
 		models = filterModelOverrides(models, catalogProv, overrides, true)
+		attachMarketSignals(models, marketSignals)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 		sections := buildModelSections(models, true)
 		filters := uiFilters{
@@ -436,7 +449,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	}
 	sortDir := q.Get("dir")
 	if sortDir != "asc" && sortDir != "desc" {
-		if sortCol == "score" || sortCol == "context" {
+		if sortCol == "score" || sortCol == "context" || sortCol == "market" {
 			sortDir = "desc"
 		} else {
 			sortDir = "asc"
@@ -501,6 +514,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		models = append(models, m)
 	}
 	models = filterModelOverrides(models, catalogProv, overrides, f.Search == "")
+	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
@@ -526,6 +540,8 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			less = effectiveOrNominal(models[i]) < effectiveOrNominal(models[j])
 		case "value":
 			less = models[i].ValuePerDollar < models[j].ValuePerDollar
+		case "market":
+			less = marketSortValue(models[i].Market) < marketSortValue(models[j].Market)
 		case "context":
 			less = models[i].ContextLength < models[j].ContextLength
 		case "id":
@@ -678,6 +694,60 @@ func attachModelTelemetry(models []uiModel, telemetry map[string]modelTelemetry)
 			models[i].Telemetry = t
 		}
 	}
+}
+
+func (s *Server) loadMarketSignals(ctx context.Context, provider string) map[string]llm.OpenRouterMarketSignal {
+	if provider != "openrouter" || s.settings == nil {
+		return nil
+	}
+	cache, err := llm.LoadOpenRouterRankingsCache(ctx, s.settings)
+	if err != nil {
+		s.logger.Warn("openrouter rankings cache load failed", "err", err)
+		return nil
+	}
+	if cache == nil {
+		return nil
+	}
+	return cache.Models
+}
+
+func attachMarketSignals(models []uiModel, signals map[string]llm.OpenRouterMarketSignal) {
+	if len(models) == 0 || len(signals) == 0 {
+		return
+	}
+	for i := range models {
+		sig, ok := signals[models[i].ID]
+		if !ok {
+			continue
+		}
+		models[i].Market = sig
+		if label := marketSignalLabel(sig); label != "" {
+			models[i].Reasons = uniqueStrings(append(models[i].Reasons, label))
+		}
+	}
+}
+
+func marketSignalLabel(sig llm.OpenRouterMarketSignal) string {
+	if sig.Rank > 0 {
+		return fmt.Sprintf("OR market #%d", sig.Rank)
+	}
+	if sig.Share > 0 {
+		return fmt.Sprintf("OR market %.1f%%", sig.Share)
+	}
+	if sig.Score > 0 {
+		return "OR market signal"
+	}
+	return ""
+}
+
+func marketSortValue(sig llm.OpenRouterMarketSignal) float64 {
+	if sig.Rank > 0 {
+		return 1_000_000 - float64(sig.Rank)
+	}
+	if sig.Share > 0 {
+		return sig.Share
+	}
+	return sig.Score
 }
 
 // enrichFromAA populates the AA-derived fields on a uiModel from the matched

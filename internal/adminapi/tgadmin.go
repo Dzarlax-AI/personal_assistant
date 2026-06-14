@@ -58,33 +58,34 @@ type tgAdminRoute struct {
 }
 
 type tgAdminModel struct {
-	ID              string         `json:"id"`
-	Provider        string         `json:"provider"`
-	PromptPrice     float64        `json:"prompt_price"`
-	CompletionPrice float64        `json:"completion_price"`
-	ContextLength   int            `json:"context_length"`
-	Vision          bool           `json:"vision"`
-	Tools           bool           `json:"tools"`
-	Reasoning       bool           `json:"reasoning"`
-	Free            bool           `json:"free"`
-	Score           float64        `json:"score"`
-	AgenticIndex    float64        `json:"agentic_index"`
-	SpeedTPS        float64        `json:"speed_tps"`
-	TTFT            float64        `json:"ttft"`
-	ValuePerDollar  float64        `json:"value_per_dollar"`
-	Recommended     bool           `json:"recommended"`
-	Current         bool           `json:"current"`
-	Source          string         `json:"source,omitempty"`
-	Policy          string         `json:"policy,omitempty"`
-	Section         string         `json:"section,omitempty"`
-	OverrideNote    string         `json:"override_note,omitempty"`
-	Reasons         []string       `json:"reasons,omitempty"`
-	Warnings        []string       `json:"warnings,omitempty"`
-	Telemetry       modelTelemetry `json:"telemetry,omitempty"`
-	CheckStatus     string         `json:"check_status,omitempty"`
-	CheckedAt       string         `json:"checked_at,omitempty"`
-	CheckLatencyMS  int64          `json:"check_latency_ms,omitempty"`
-	CheckError      string         `json:"check_error,omitempty"`
+	ID              string                     `json:"id"`
+	Provider        string                     `json:"provider"`
+	PromptPrice     float64                    `json:"prompt_price"`
+	CompletionPrice float64                    `json:"completion_price"`
+	ContextLength   int                        `json:"context_length"`
+	Vision          bool                       `json:"vision"`
+	Tools           bool                       `json:"tools"`
+	Reasoning       bool                       `json:"reasoning"`
+	Free            bool                       `json:"free"`
+	Score           float64                    `json:"score"`
+	AgenticIndex    float64                    `json:"agentic_index"`
+	SpeedTPS        float64                    `json:"speed_tps"`
+	TTFT            float64                    `json:"ttft"`
+	ValuePerDollar  float64                    `json:"value_per_dollar"`
+	Recommended     bool                       `json:"recommended"`
+	Current         bool                       `json:"current"`
+	Source          string                     `json:"source,omitempty"`
+	Policy          string                     `json:"policy,omitempty"`
+	Section         string                     `json:"section,omitempty"`
+	OverrideNote    string                     `json:"override_note,omitempty"`
+	Reasons         []string                   `json:"reasons,omitempty"`
+	Warnings        []string                   `json:"warnings,omitempty"`
+	Telemetry       modelTelemetry             `json:"telemetry,omitempty"`
+	Market          llm.OpenRouterMarketSignal `json:"market,omitempty"`
+	CheckStatus     string                     `json:"check_status,omitempty"`
+	CheckedAt       string                     `json:"checked_at,omitempty"`
+	CheckLatencyMS  int64                      `json:"check_latency_ms,omitempty"`
+	CheckError      string                     `json:"check_error,omitempty"`
 }
 
 type tgAdminModelsResponse struct {
@@ -409,6 +410,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 			aaModels = cache.Models
 		}
 	}
+	marketSignals := s.loadMarketSignals(ctx5, provider)
 
 	var models []uiModel
 	recommendedMode := false
@@ -436,6 +438,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 	if len(models) == 0 {
 		models = tgAdminBrowseModels(allCaps, aaModels, query, role)
 	}
+	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, provider))
 	models = filterModelOverrides(models, provider, overrides, true)
 	models = filterBlockedFreeModels(models, provider, checks)
@@ -607,6 +610,7 @@ func tgModelFromUI(provider string, m uiModel, current string, checks map[string
 		Reasons:         m.Reasons,
 		Warnings:        m.Warnings,
 		Telemetry:       m.Telemetry,
+		Market:          m.Market,
 		CheckStatus:     check.Status,
 		CheckedAt:       check.CheckedAt,
 		CheckLatencyMS:  check.LatencyMS,

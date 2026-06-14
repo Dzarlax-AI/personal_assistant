@@ -114,6 +114,9 @@
               hx-vals='{"sort":"think","dir":"{{if and (eq $s "think") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer" title="TTFA - TTFT: seconds spent streaming thinking trace before the answer begins. 0 for non-reasoners.">Think{{if eq $s "think"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+              hx-vals='{"sort":"market","dir":"{{if and (eq $s "market") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
+              style="cursor:pointer" title="OpenRouter rankings market signal. Advisory usage/popularity signal only; not used as a quality benchmark.">Market{{if eq $s "market"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
+          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"value","dir":"{{if and (eq $s "value") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer" title="Quality per $ (higher = more bang per buck). Role-specific in Suggest mode (uses role's Pareto axes); generic agentic/prompt in browse mode.">Value{{if eq $s "value"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
         </tr>

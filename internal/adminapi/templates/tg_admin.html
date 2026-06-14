@@ -593,6 +593,8 @@
             model.tools ? "tools" : "",
             model.vision ? "vision" : "",
             model.reasoning ? "reasoning" : "",
+            model.market && model.market.rank ? "market #" + model.market.rank : "",
+            model.market && !model.market.rank && (model.market.share || model.market.score) ? "market" : "",
             model.agentic_index ? "agentic " + Math.round(model.agentic_index) : ""
           ].filter(Boolean).forEach(function (v) {
             var chip = document.createElement("span");
