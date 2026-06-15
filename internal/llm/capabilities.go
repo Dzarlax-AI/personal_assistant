@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -62,7 +65,11 @@ type ConfigurableProvider interface {
 
 // --- OpenRouter /models fetcher ---
 
-var openRouterHTTPClient = &http.Client{Timeout: 20 * time.Second}
+var (
+	openRouterHTTPClient         = &http.Client{Timeout: 20 * time.Second}
+	openRouterPageBaseURL        = "https://openrouter.ai"
+	openRouterDescriptionPayload = regexp.MustCompile(`\\"description\\":\\"((?:\\\\.|[^\\"])*)\\"`)
+)
 
 // FetchOpenRouterModels pulls the full catalog from OpenRouter and returns a
 // map keyed by model id. Prices are normalised to USD per 1M tokens (OpenRouter
@@ -131,6 +138,85 @@ func parseOpenRouterModels(body []byte) (map[string]Capabilities, error) {
 		}
 	}
 	return out, nil
+}
+
+// OpenRouterDescriptionLooksTruncated reports descriptions that already arrive
+// from OpenRouter with an ellipsis. Those are upstream-shortened strings, not a
+// UI clamp, so callers may optionally enrich them from the model page payload.
+func OpenRouterDescriptionLooksTruncated(desc string) bool {
+	desc = strings.TrimSpace(desc)
+	return strings.HasSuffix(desc, "...") || strings.HasSuffix(desc, "…")
+}
+
+// FetchOpenRouterModelDescription fetches a model page and extracts the longest
+// matching description from its SSR payload. OpenRouter's public /models API can
+// return shortened descriptions ending in "...", while the model page payload
+// usually carries the full text.
+func FetchOpenRouterModelDescription(ctx context.Context, modelID, currentDescription string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openRouterModelPageURL(modelID), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := openRouterHTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openrouter model page: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+	if err != nil {
+		return "", fmt.Errorf("openrouter model page: read: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("openrouter model page: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	full := extractOpenRouterPageDescription(body, currentDescription)
+	if full == "" {
+		return "", fmt.Errorf("openrouter model page: full description not found")
+	}
+	return full, nil
+}
+
+func openRouterModelPageURL(modelID string) string {
+	parts := strings.Split(modelID, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return strings.TrimRight(openRouterPageBaseURL, "/") + "/" + strings.Join(parts, "/")
+}
+
+func extractOpenRouterPageDescription(body []byte, currentDescription string) string {
+	current := normalizeDescriptionText(currentDescription)
+	prefix := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(current, "..."), "…"))
+	if len(prefix) > 120 {
+		prefix = prefix[:120]
+	}
+	var best string
+	for _, m := range openRouterDescriptionPayload.FindAllSubmatch(body, -1) {
+		if len(m) != 2 {
+			continue
+		}
+		raw := string(m[1])
+		decoded, err := strconv.Unquote(`"` + raw + `"`)
+		if err != nil {
+			continue
+		}
+		decoded = normalizeDescriptionText(html.UnescapeString(decoded))
+		if decoded == "" || len(decoded) <= len(current) || OpenRouterDescriptionLooksTruncated(decoded) {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(decoded, prefix) {
+			continue
+		}
+		if len(decoded) > len(best) {
+			best = decoded
+		}
+	}
+	return best
+}
+
+func normalizeDescriptionText(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 }
 
 func containsStr(s []string, target string) bool {

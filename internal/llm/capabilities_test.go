@@ -128,3 +128,26 @@ func TestCapabilitiesFree(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractOpenRouterPageDescriptionUsesFullPayload(t *testing.T) {
+	current := "NVIDIA Nemotron 3 Nano Omni is a 30B-A3B open multimodal model designed to function as a perception and context sub-agent in enterprise agent systems. It accepts text, image, video, and..."
+	full := "NVIDIA Nemotron 3 Nano Omni is a 30B-A3B open multimodal model designed to function as a perception and context sub-agent in enterprise agent systems. It accepts text, image, video, and audio inputs and produces text output, enabling agents to perceive and reason across modalities in a single inference loop."
+	body := []byte(`prefix {\"description\":\"Short page meta.\"} middle {\"description\":\"` + full + `\"} suffix`)
+
+	got := extractOpenRouterPageDescription(body, current)
+	if got != full {
+		t.Fatalf("description mismatch:\nwant %q\ngot  %q", full, got)
+	}
+}
+
+func TestOpenRouterDescriptionLooksTruncated(t *testing.T) {
+	if !OpenRouterDescriptionLooksTruncated("accepts text, image, video, and...") {
+		t.Fatal("ASCII ellipsis should be treated as truncated")
+	}
+	if !OpenRouterDescriptionLooksTruncated("accepts text, image, video, and…") {
+		t.Fatal("unicode ellipsis should be treated as truncated")
+	}
+	if OpenRouterDescriptionLooksTruncated("Full sentence.") {
+		t.Fatal("complete sentence should not be treated as truncated")
+	}
+}

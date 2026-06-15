@@ -14,6 +14,8 @@ import (
 	"telegram-agent/internal/llm"
 )
 
+const maxVisibleDescriptionEnrich = 8
+
 // --- View data ---
 
 type uiRole struct {
@@ -474,6 +476,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		attachMarketSignals(models, marketSignals)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 		attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
+		s.enrichVisibleDescriptions(ctx5, catalogProv, models)
 		decorateModelDisplay(models, preset)
 		sections := buildModelSections(models, true)
 		filters := uiFilters{
@@ -591,7 +594,6 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 	attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
-	decorateModelDisplay(models, "")
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
 		var less bool
@@ -633,6 +635,8 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		}
 		return !less
 	})
+	s.enrichVisibleDescriptions(ctx5, catalogProv, models)
+	decorateModelDisplay(models, "")
 
 	return indexData{
 		Routing:         s.buildRouting(),
@@ -640,6 +644,39 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		Models:          models,
 		Filters:         f,
 		CatalogProvider: catalogProv,
+	}
+}
+
+func (s *Server) enrichVisibleDescriptions(ctx context.Context, provider string, models []uiModel) {
+	if provider != "openrouter" || s.capStore == nil {
+		return
+	}
+	remaining := maxVisibleDescriptionEnrich
+	for i := range models {
+		if remaining <= 0 {
+			return
+		}
+		if !llm.OpenRouterDescriptionLooksTruncated(models[i].Description) {
+			continue
+		}
+		remaining--
+		full, err := llm.FetchOpenRouterModelDescription(ctx, models[i].ID, models[i].Description)
+		if err != nil {
+			s.logger.Debug("openrouter description enrichment failed", "model", models[i].ID, "err", err)
+			continue
+		}
+		if len(full) <= len(models[i].Description) {
+			continue
+		}
+		models[i].Description = full
+		caps := s.lookupCapsFor(ctx, provider, models[i].ID)
+		caps.Description = full
+		if caps.Name == "" {
+			caps.Name = models[i].Name
+		}
+		if err := s.capStore.PutCapabilities(ctx, provider, models[i].ID, caps); err != nil {
+			s.logger.Debug("openrouter description cache update failed", "model", models[i].ID, "err", err)
+		}
 	}
 }
 
