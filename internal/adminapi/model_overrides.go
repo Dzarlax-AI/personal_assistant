@@ -117,6 +117,8 @@ func appendAllowedOverrideCandidates(models []uiModel, allCaps map[string]llm.Ca
 		}
 		m := uiModel{
 			ID:              modelID,
+			Name:            c.Name,
+			Description:     c.Description,
 			PromptPrice:     c.PromptPrice,
 			CompletionPrice: c.CompletionPrice,
 			ContextLength:   c.ContextLength,

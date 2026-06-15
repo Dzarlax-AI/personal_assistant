@@ -9,6 +9,8 @@ func TestParseOpenRouterModels(t *testing.T) {
 		"data": [
 			{
 				"id": "anthropic/claude-sonnet-4.5",
+				"name": "Claude Sonnet 4.5",
+				"description": "A balanced frontier model for agentic coding and tool use.",
 				"context_length": 200000,
 				"architecture": {
 					"input_modalities": ["text", "image", "file"],
@@ -58,6 +60,12 @@ func TestParseOpenRouterModels(t *testing.T) {
 	}
 
 	claude := caps["anthropic/claude-sonnet-4.5"]
+	if claude.Name != "Claude Sonnet 4.5" {
+		t.Errorf("claude name: want OpenRouter display name, got %q", claude.Name)
+	}
+	if claude.Description != "A balanced frontier model for agentic coding and tool use." {
+		t.Errorf("claude description not parsed: %q", claude.Description)
+	}
 	if !claude.Vision {
 		t.Error("claude should have vision")
 	}

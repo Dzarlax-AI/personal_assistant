@@ -59,6 +59,8 @@ func (p *Postgres) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS model_capabilities (
 			provider         TEXT        NOT NULL,
 			model_id         TEXT        NOT NULL,
+			model_name       TEXT        NOT NULL DEFAULT '',
+			description      TEXT        NOT NULL DEFAULT '',
 			vision           BOOLEAN     NOT NULL DEFAULT FALSE,
 			tools            BOOLEAN     NOT NULL DEFAULT FALSE,
 			reasoning        BOOLEAN     NOT NULL DEFAULT FALSE,
@@ -69,6 +71,8 @@ func (p *Postgres) migrate(ctx context.Context) error {
 			fetched_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (provider, model_id)
 		)`,
+		`ALTER TABLE model_capabilities ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE model_capabilities ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE model_capabilities ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS kv_settings (
 			key        TEXT PRIMARY KEY,
@@ -150,9 +154,9 @@ func (p *Postgres) PutSetting(ctx context.Context, key, value string) error {
 func (p *Postgres) GetCapabilities(ctx context.Context, provider, modelID string) (llm.Capabilities, bool, error) {
 	var c llm.Capabilities
 	err := p.pool.QueryRow(ctx, `
-		SELECT vision, tools, reasoning, prompt_price, completion_price, context_length, score
+		SELECT model_name, description, vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = $1 AND model_id = $2`,
-		provider, modelID).Scan(&c.Vision, &c.Tools, &c.Reasoning,
+		provider, modelID).Scan(&c.Name, &c.Description, &c.Vision, &c.Tools, &c.Reasoning,
 		&c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score)
 	if err == pgx.ErrNoRows {
 		return llm.Capabilities{}, false, nil
@@ -166,9 +170,11 @@ func (p *Postgres) GetCapabilities(ctx context.Context, provider, modelID string
 func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string, c llm.Capabilities) error {
 	_, err := p.pool.Exec(ctx, `
 		INSERT INTO model_capabilities
-			(provider, model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score, fetched_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+			(provider, model_id, model_name, description, vision, tools, reasoning, prompt_price, completion_price, context_length, score, fetched_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (provider, model_id) DO UPDATE SET
+			model_name       = EXCLUDED.model_name,
+			description      = EXCLUDED.description,
 			vision           = EXCLUDED.vision,
 			tools            = EXCLUDED.tools,
 			reasoning        = EXCLUDED.reasoning,
@@ -177,7 +183,7 @@ func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string
 			context_length   = EXCLUDED.context_length,
 			score            = EXCLUDED.score,
 			fetched_at       = NOW()`,
-		provider, modelID, c.Vision, c.Tools, c.Reasoning,
+		provider, modelID, c.Name, c.Description, c.Vision, c.Tools, c.Reasoning,
 		c.PromptPrice, c.CompletionPrice, c.ContextLength, c.Score)
 	if err != nil {
 		return fmt.Errorf("put capabilities: %w", err)
@@ -187,7 +193,7 @@ func (p *Postgres) PutCapabilities(ctx context.Context, provider, modelID string
 
 func (p *Postgres) GetAllCapabilities(ctx context.Context, provider string) (map[string]llm.Capabilities, error) {
 	rows, err := p.pool.Query(ctx, `
-		SELECT model_id, vision, tools, reasoning, prompt_price, completion_price, context_length, score
+		SELECT model_id, model_name, description, vision, tools, reasoning, prompt_price, completion_price, context_length, score
 		FROM model_capabilities WHERE provider = $1`, provider)
 	if err != nil {
 		return nil, fmt.Errorf("list capabilities: %w", err)
@@ -197,7 +203,7 @@ func (p *Postgres) GetAllCapabilities(ctx context.Context, provider string) (map
 	for rows.Next() {
 		var id string
 		var c llm.Capabilities
-		if err := rows.Scan(&id, &c.Vision, &c.Tools, &c.Reasoning,
+		if err := rows.Scan(&id, &c.Name, &c.Description, &c.Vision, &c.Tools, &c.Reasoning,
 			&c.PromptPrice, &c.CompletionPrice, &c.ContextLength, &c.Score); err != nil {
 			return nil, err
 		}

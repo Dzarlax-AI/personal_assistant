@@ -459,6 +459,8 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 		}
 		m := uiModel{
 			ID:              id,
+			Name:            c.Name,
+			Description:     c.Description,
 			PromptPrice:     c.PromptPrice,
 			CompletionPrice: c.CompletionPrice,
 			ContextLength:   c.ContextLength,
