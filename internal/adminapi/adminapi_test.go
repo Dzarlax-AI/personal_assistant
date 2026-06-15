@@ -418,11 +418,20 @@ func TestTGAdminRecommendedModelsAppendFreeCandidatesUnrecommended(t *testing.T)
 	for _, model := range payload.Models {
 		if model.Recommended && !model.Free {
 			sawRecommended = true
+			if model.PrimaryReason != "Pareto frontier for simple" {
+				t.Fatalf("recommended primary reason = %q, want role-specific Pareto explanation: %+v", model.PrimaryReason, model)
+			}
+			if strings.EqualFold(model.PolicyLabel, "recommended") {
+				t.Fatalf("recommended policy label should be suppressed, got %+v", model)
+			}
 		}
 		if model.Free {
 			sawFreeCandidate = true
 			if model.Recommended || model.Policy != "free_unverified" || model.Source != "free" {
 				t.Fatalf("unexpected free candidate flags: %+v", model)
+			}
+			if model.StatusLabel != "Untested" || model.PolicyLabel != "Free unverified" {
+				t.Fatalf("unexpected free candidate display labels: %+v", model)
 			}
 		}
 	}
