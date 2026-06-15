@@ -94,6 +94,7 @@ type uiFilters struct {
 	ValueLeaderHint   string // e.g. "85% quality @ 30% price" (preset path only)
 	Sort              string // active sort column: "prompt", "completion", "score", "context", "id"
 	SortDir           string // "asc" or "desc"
+	View              string // "cards" (default) or "table"
 }
 
 type uiModelSection struct {
@@ -369,6 +370,10 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	if catalogProv != "gemini" {
 		catalogProv = "openrouter"
 	}
+	viewMode := q.Get("view")
+	if viewMode != "table" {
+		viewMode = "cards"
+	}
 
 	ctx5, cancel5 := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel5()
@@ -417,6 +422,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 			Tools:             requiresTools(preset),
 			Vision:            preset == "multimodal",
 			Reasoning:         preset == "complex",
+			View:              viewMode,
 		}
 		// Knee-point value leader: best quality/price among frontier models
 		// with quality ≥ 50% of top. Skipped when the top model is already
@@ -468,6 +474,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		Reasoning: q.Get("reasoning") != "",
 		Sort:      sortCol,
 		SortDir:   sortDir,
+		View:      viewMode,
 	}
 
 	models := make([]uiModel, 0, len(allCaps))

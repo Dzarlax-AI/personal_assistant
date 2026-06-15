@@ -176,6 +176,73 @@ func TestTemplatesParse(t *testing.T) {
 	}
 }
 
+func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
+	slotInfos := []uiSlotInfo{{Name: "default-or", Provider: "openrouter"}}
+	base := indexData{
+		Routing: uiRouting{AllSlots: slotInfos},
+		Slots:   []uiSlot{{Name: "default-or", ModelID: "qwen/qwen3.5-plus"}},
+		Models: []uiModel{{
+			ID:              "qwen/qwen3.5-plus",
+			PromptPrice:     1.0,
+			CompletionPrice: 3.0,
+			ContextLength:   128000,
+			Tools:           true,
+			StatusLabel:     "Candidate",
+			PrimaryReason:   "tool calling",
+		}},
+		CatalogProvider: "openrouter",
+	}
+
+	t.Run("cards default", func(t *testing.T) {
+		data := base
+		data.Filters.View = "cards"
+		var buf bytes.Buffer
+		if err := render(&buf, viewModelsBrowser, data); err != nil {
+			t.Fatal(err)
+		}
+		html := buf.String()
+		if !strings.Contains(html, "catalog-grid") || !strings.Contains(html, "catalog-card") {
+			t.Fatalf("card view missing catalog cards: %s", html)
+		}
+		if strings.Contains(html, "catalog-audit-table") {
+			t.Fatalf("card view should not render audit table")
+		}
+	})
+
+	t.Run("table audit", func(t *testing.T) {
+		data := base
+		data.Filters.View = "table"
+		var buf bytes.Buffer
+		if err := render(&buf, viewModelsBrowser, data); err != nil {
+			t.Fatal(err)
+		}
+		html := buf.String()
+		if !strings.Contains(html, "catalog-audit-table") {
+			t.Fatalf("table view missing audit table: %s", html)
+		}
+		if strings.Contains(html, "catalog-grid") || strings.Contains(html, "catalog-card") {
+			t.Fatalf("table view should not render card layout")
+		}
+	})
+
+	t.Run("preset state is preserved except clear", func(t *testing.T) {
+		data := base
+		data.Filters.View = "cards"
+		data.Filters.ActivePreset = "default"
+		var buf bytes.Buffer
+		if err := render(&buf, viewModelsBrowser, data); err != nil {
+			t.Fatal(err)
+		}
+		html := buf.String()
+		if !strings.Contains(html, `name="preset" value="default"`) {
+			t.Fatalf("active preset should be submitted with filters and view toggle: %s", html)
+		}
+		if !strings.Contains(html, `hx-get="/models?provider=openrouter&view=cards&full=1"`) {
+			t.Fatalf("clear preset should refresh browser without preset: %s", html)
+		}
+	})
+}
+
 func signedTGInitData(t *testing.T, token string, userID int64, authTime time.Time) string {
 	t.Helper()
 	userJSON, err := json.Marshal(tgAdminUser{ID: userID, FirstName: "Alex"})

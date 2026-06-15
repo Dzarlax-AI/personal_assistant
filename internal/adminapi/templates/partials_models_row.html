@@ -25,11 +25,142 @@
 {{end}}
 {{end}}
 
+{{define "models_cards"}}
+{{if .ModelSections}}
+  {{range .ModelSections}}
+  <section class="catalog-card-section" data-section="{{.Key}}">
+    <div class="catalog-section-head">
+      <div>
+        <strong>{{.Title}}</strong>
+        <span>{{len .Models}} models</span>
+      </div>
+      <p>{{.Description}}</p>
+    </div>
+    <div class="catalog-grid">
+      {{range .Models}}
+        {{template "model_card" dict "Model" . "Root" $}}
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+{{else}}
+  {{if .Models}}
+  <div class="catalog-grid">
+    {{range .Models}}
+      {{template "model_card" dict "Model" . "Root" $}}
+    {{end}}
+  </div>
+  {{else}}
+  <div class="catalog-empty">No models match the filters.</div>
+  {{end}}
+{{end}}
+{{end}}
+
+{{define "model_card"}}
+  {{$root := .Root}}
+  {{with .Model}}
+  <article class="catalog-card" data-model-card>
+    <header class="catalog-card__header">
+      <div class="catalog-card__title">
+        <div class="model-id">{{.ID}}</div>
+        <div class="catalog-card__chips">
+          {{if .StatusLabel}}<span class="badge badge--neutral">{{.StatusLabel}}</span>{{end}}
+          {{if .PolicyLabel}}<span class="badge badge--neutral">{{.PolicyLabel}}</span>{{end}}
+          {{if .Vision}}<span class="badge badge--success" title="Vision">V</span>{{end}}
+          {{if .Tools}}<span class="badge badge--neutral" title="Tool-calling">T</span>{{end}}
+          {{if .Reasoning}}<span class="badge badge--warning" title="Reasoning">R</span>{{end}}
+          {{if .Free}}<span class="badge badge--success" title="Free tier">FREE</span>{{end}}
+        </div>
+      </div>
+      <div class="catalog-card__price">
+        <span>{{priceUSD .PromptPrice}}</span>
+        <small>in / 1M</small>
+      </div>
+    </header>
+
+    {{if .PrimaryReason}}
+    <div class="catalog-card__why">Why: {{.PrimaryReason}}</div>
+    {{end}}
+    {{if .SecondaryReasons}}
+    <div class="catalog-card__reasons">
+      {{range .SecondaryReasons}}<span>{{.}}</span>{{end}}
+    </div>
+    {{end}}
+    {{if .Warnings}}
+    <div class="catalog-card__warnings">
+      {{range .Warnings}}<span>{{.}}</span>{{end}}
+    </div>
+    {{end}}
+
+    <div class="catalog-metrics">
+      <div><span>out</span><strong>{{priceUSD .CompletionPrice}}</strong></div>
+      <div><span>ctx</span><strong>{{ctxShort .ContextLength}}</strong></div>
+      <div><span>quality</span><strong>{{if gt .AgenticIndex 0.0}}{{printf "%.0f" .AgenticIndex}} agent{{else if gt .CodingIndex 0.0}}{{printf "%.0f" .CodingIndex}} code{{else if gt .Score 0.0}}{{printf "%.0f" .Score}} intel{{else}}—{{end}}</strong></div>
+      <div><span>speed</span><strong>{{if gt .TTFT 0.0}}{{printf "%.2fs" .TTFT}}{{else if gt .SpeedTPS 0.0}}{{printf "%.0f t/s" .SpeedTPS}}{{else}}—{{end}}</strong></div>
+      <div><span>market</span><strong>{{if gt .Market.Rank 0}}#{{.Market.Rank}}{{else if gt .Market.Share 0.0}}{{printf "%.1f%%" .Market.Share}}{{else if gt .Market.Score 0.0}}seen{{else}}—{{end}}</strong></div>
+    </div>
+
+    {{if gt .Telemetry.Calls 0}}
+    <div class="catalog-card__telemetry">
+      7d: {{.Telemetry.Calls}} calls · {{.Telemetry.AvgLatencyMS}} ms · {{printf "%.0f%%" .Telemetry.ErrorRatePct}} errors · {{printf "$%.4f" .Telemetry.CostUSD}}
+    </div>
+    {{end}}
+
+    {{template "model_actions" dict "Model" . "Root" $root}}
+  </article>
+  {{end}}
+{{end}}
+
+{{define "model_actions"}}
+  {{$root := .Root}}
+  {{with .Model}}
+  {{$modelID := .ID}}
+  <div class="model-actions">
+    <input type="hidden" name="model_id" value="{{.ID}}">
+    <input type="hidden" name="provider" value="{{$root.CatalogProvider}}">
+    <div class="model-actions__override">
+      <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note">
+      <button class="btn btn--small btn--ghost"
+              hx-post="/models/override"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-vals='{"state":"allow"}'
+              hx-target="#models-content"
+              hx-swap="outerHTML">Allow</button>
+      <button class="btn btn--small btn--ghost"
+              hx-post="/models/override"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-vals='{"state":"deny"}'
+              hx-target="#models-content"
+              hx-swap="outerHTML">Deny</button>
+      {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
+      <button class="btn btn--small btn--ghost"
+              hx-post="/models/override"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-vals='{"state":""}'
+              hx-target="#models-content"
+              hx-swap="outerHTML">Clear</button>
+      {{end}}
+    </div>
+    <div class="assign-buttons">
+      {{range $root.Slots}}
+      <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
+              hx-post="/slots/{{.Name}}/assign"
+              hx-include="closest [data-model-card]"
+              hx-target="#routing-section"
+              hx-swap="innerHTML">
+        {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
+      </button>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+{{end}}
+
 {{define "model_row"}}
   {{$root := .Root}}
   {{with .Model}}
   {{$modelID := .ID}}
-  <tr>
+  <tr data-model-card>
     <td>
       <div class="model-id">{{.ID}}</div>
       <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
@@ -52,42 +183,7 @@
         · {{printf "$%.4f" .Telemetry.CostUSD}}
       </div>
       {{end}}
-      <div style="display:flex;gap:0.35rem;align-items:center;margin-top:0.45rem;flex-wrap:wrap;">
-        <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note"
-               style="width:12rem;min-width:9rem;font-size:0.8rem;">
-        <button class="btn btn--small btn--ghost"
-                hx-post="/models/override"
-                hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":"allow"}'
-                hx-target="#models-content"
-                hx-swap="outerHTML">Allow</button>
-        <button class="btn btn--small btn--ghost"
-                hx-post="/models/override"
-                hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":"deny"}'
-                hx-target="#models-content"
-                hx-swap="outerHTML">Deny</button>
-        {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
-        <button class="btn btn--small btn--ghost"
-                hx-post="/models/override"
-                hx-include="#models-filters, closest tr"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$root.CatalogProvider}}","state":""}'
-                hx-target="#models-content"
-                hx-swap="outerHTML">Clear</button>
-        {{end}}
-      </div>
-      <div class="assign-buttons">
-        {{$prov := $root.CatalogProvider}}
-        {{range $root.Slots}}
-        <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
-                hx-post="/slots/{{.Name}}/assign"
-                hx-vals='{"model_id":"{{$modelID}}","provider":"{{$prov}}"}'
-                hx-target="#routing-section"
-                hx-swap="innerHTML">
-          {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
-        </button>
-        {{end}}
-      </div>
+      {{template "model_actions" dict "Model" . "Root" $root}}
     </td>
     <td class="price-cell">{{priceUSD .PromptPrice}}</td>
     <td class="price-cell">{{priceUSD .CompletionPrice}}</td>
