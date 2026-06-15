@@ -20,10 +20,39 @@
   .admin-section { margin-bottom: 2rem; }
   .filters { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
   .filters label { display: inline-flex; gap: 0.25rem; align-items: center; }
+  .catalog-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid rgba(0,0,0,0.1); flex-wrap: wrap; }
+  .catalog-tabs, .catalog-view-toggle { display: inline-flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .catalog-sort { width: 10rem; }
+  .catalog-sort-dir { width: 6.5rem; }
   .model-id { font-family: var(--font-mono, monospace); font-size: 0.875rem; }
   .caps-badges .badge { margin-right: 0.25rem; }
-  .assign-buttons { margin-top: 0.25rem; }
+  .assign-buttons { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.25rem; }
   .assign-buttons .btn { margin-right: 0.25rem; margin-bottom: 0.25rem; }
+  .model-actions { margin-top: 0.75rem; display: grid; gap: 0.55rem; }
+  .model-actions__override { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+  .model-actions__override .form-input { width: 12rem; min-width: 9rem; font-size: 0.8rem; }
+  .catalog-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 0.75rem; align-items: stretch; }
+  .catalog-card-section { margin-bottom: 1rem; }
+  .catalog-section-head { display: flex; justify-content: space-between; gap: 1rem; align-items: end; padding: 0.35rem 0 0.5rem; }
+  .catalog-section-head span, .catalog-section-head p { color: var(--text-secondary); font-size: 0.82rem; margin: 0; }
+  .catalog-card { border: 1px solid rgba(0,0,0,0.10); border-radius: 8px; padding: 0.85rem; background: var(--surface, #fff); display: flex; flex-direction: column; min-width: 0; }
+  .catalog-card__header { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; }
+  .catalog-card__title { min-width: 0; }
+  .catalog-card__title .model-id { overflow-wrap: anywhere; line-height: 1.25; }
+  .catalog-card__chips { display: flex; gap: 0.3rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .catalog-card__price { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .catalog-card__price span { font-weight: 700; display: block; }
+  .catalog-card__price small { color: var(--text-secondary); font-size: 0.72rem; }
+  .catalog-card__why { margin-top: 0.65rem; font-size: 0.86rem; color: var(--text); }
+  .catalog-card__reasons, .catalog-card__warnings { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.45rem; font-size: 0.78rem; }
+  .catalog-card__reasons { color: var(--text-secondary); }
+  .catalog-card__warnings { color: var(--warning, #9a5b00); }
+  .catalog-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.35rem; margin-top: 0.75rem; }
+  .catalog-metrics div { min-width: 0; padding: 0.45rem 0.5rem; border-radius: 6px; background: var(--surface-2, rgba(0,0,0,0.04)); }
+  .catalog-metrics span { display: block; color: var(--text-secondary); font-size: 0.68rem; text-transform: uppercase; }
+  .catalog-metrics strong { display: block; margin-top: 0.12rem; font-size: 0.82rem; overflow-wrap: anywhere; }
+  .catalog-card__telemetry { margin-top: 0.55rem; color: var(--text-secondary); font-size: 0.78rem; }
+  .catalog-empty { text-align: center; padding: 2rem; color: var(--text-secondary); border: 1px dashed rgba(0,0,0,0.16); border-radius: 8px; }
   .price-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
   .preset-banner { padding: 0.75rem 1rem; border-radius: var(--radius); background: var(--surface-2); margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
   .preset-banner .preset-meta { color: var(--text-secondary); font-size: 0.875rem; margin-top: 0.25rem; }
@@ -61,6 +90,16 @@
     .admin-section { margin-bottom: 1.25rem; }
     .filters { gap: 0.5rem; }
     .filters input[type="text"], .filters input[type="search"] { flex: 1 1 100%; min-width: 0; }
+    .catalog-toolbar { align-items: stretch; }
+    .catalog-tabs, .catalog-view-toggle { width: 100%; }
+    .catalog-view-toggle .btn, .catalog-tabs .btn { flex: 1 1 auto; }
+    .catalog-sort, .catalog-sort-dir { flex: 1 1 8rem; width: auto; }
+    .catalog-grid { grid-template-columns: 1fr; }
+    .catalog-card { padding: 0.75rem; }
+    .catalog-card__header { flex-direction: column; gap: 0.5rem; }
+    .catalog-card__price { text-align: left; }
+    .catalog-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .model-actions__override .form-input { width: 100%; }
     .usage-chart-wrap { padding: 0.5rem 0.6rem; }
     .usage-breakdown { grid-template-columns: 1fr; gap: 1rem; }
     .preset-banner { padding: 0.6rem 0.75rem; flex-direction: column; align-items: flex-start; }

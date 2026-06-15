@@ -1,14 +1,30 @@
 {{define "models_browser"}}
 <div id="models-browser">
-  <div class="catalog-tabs" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;border-bottom:1px solid rgba(0,0,0,0.1);">
+  <div class="catalog-toolbar">
+    <div class="catalog-tabs">
     <button type="button" class="btn btn--small {{if eq .CatalogProvider "openrouter"}}btn--primary{{else}}btn--ghost{{end}}"
-            hx-get="/models?provider=openrouter&full=1"
+            hx-get="/models?provider=openrouter&full=1&view={{.Filters.View}}{{if .Filters.ActivePreset}}&preset={{.Filters.ActivePreset}}{{end}}"
             hx-target="#models-browser"
             hx-swap="outerHTML">OpenRouter</button>
     <button type="button" class="btn btn--small {{if eq .CatalogProvider "gemini"}}btn--primary{{else}}btn--ghost{{end}}"
-            hx-get="/models?provider=gemini&full=1"
+            hx-get="/models?provider=gemini&full=1&view={{.Filters.View}}{{if .Filters.ActivePreset}}&preset={{.Filters.ActivePreset}}{{end}}"
             hx-target="#models-browser"
             hx-swap="outerHTML">Gemini</button>
+    </div>
+    <div class="catalog-view-toggle" role="group" aria-label="Catalog view">
+      <button type="button" class="btn btn--small {{if ne .Filters.View "table"}}btn--primary{{else}}btn--ghost{{end}}"
+              hx-get="/models?full=1"
+              hx-target="#models-browser"
+              hx-swap="outerHTML"
+              hx-include="#models-filters"
+              hx-vals='{"view":"cards"}'>Cards</button>
+      <button type="button" class="btn btn--small {{if eq .Filters.View "table"}}btn--primary{{else}}btn--ghost{{end}}"
+              hx-get="/models?full=1"
+              hx-target="#models-browser"
+              hx-swap="outerHTML"
+              hx-include="#models-filters"
+              hx-vals='{"view":"table"}'>Audit table</button>
+    </div>
   </div>
   <form id="models-filters" class="filters"
         hx-get="/models"
@@ -16,12 +32,32 @@
         hx-swap="outerHTML"
         hx-trigger="input delay:300ms, change">
     <input type="hidden" name="provider" value="{{.CatalogProvider}}">
+    <input type="hidden" name="view" value="{{.Filters.View}}">
+    {{if .Filters.ActivePreset}}<input type="hidden" name="preset" value="{{.Filters.ActivePreset}}">{{end}}
     <input class="form-input" type="search" name="q" placeholder="Search model id…"
            value="{{.Filters.Search}}" style="flex:1;min-width:12rem;">
     <label><input type="checkbox" name="free"      {{if .Filters.Free}}checked{{end}}> Free</label>
     <label><input type="checkbox" name="vision"    {{if .Filters.Vision}}checked{{end}}> Vision</label>
     <label><input type="checkbox" name="tools"     {{if .Filters.Tools}}checked{{end}}> Tools</label>
     <label><input type="checkbox" name="reasoning" {{if .Filters.Reasoning}}checked{{end}}> Reasoning</label>
+    <select class="form-input catalog-sort" name="sort" title="Sort models">
+      <option value="prompt" {{if eq .Filters.Sort "prompt"}}selected{{end}}>Prompt price</option>
+      <option value="completion" {{if eq .Filters.Sort "completion"}}selected{{end}}>Completion price</option>
+      <option value="effective" {{if eq .Filters.Sort "effective"}}selected{{end}}>Effective price</option>
+      <option value="score" {{if eq .Filters.Sort "score"}}selected{{end}}>Intel</option>
+      <option value="coding" {{if eq .Filters.Sort "coding"}}selected{{end}}>Coding</option>
+      <option value="agentic" {{if eq .Filters.Sort "agentic"}}selected{{end}}>Agentic</option>
+      <option value="speed" {{if eq .Filters.Sort "speed"}}selected{{end}}>Speed</option>
+      <option value="ttft" {{if eq .Filters.Sort "ttft"}}selected{{end}}>TTFT</option>
+      <option value="context" {{if eq .Filters.Sort "context"}}selected{{end}}>Context</option>
+      <option value="market" {{if eq .Filters.Sort "market"}}selected{{end}}>Market</option>
+      <option value="value" {{if eq .Filters.Sort "value"}}selected{{end}}>Value</option>
+      <option value="id" {{if eq .Filters.Sort "id"}}selected{{end}}>Model id</option>
+    </select>
+    <select class="form-input catalog-sort-dir" name="dir" title="Sort direction">
+      <option value="asc" {{if eq .Filters.SortDir "asc"}}selected{{end}}>Asc</option>
+      <option value="desc" {{if eq .Filters.SortDir "desc"}}selected{{end}}>Desc</option>
+    </select>
   </form>
   {{template "models_content" .}}
 </div>
@@ -62,21 +98,29 @@
       </details>
     </div>
     <button class="btn btn--ghost btn--small"
-            hx-get="/models"
-            hx-target="#models-content"
-            hx-swap="outerHTML"
-            hx-include="#models-filters">
+            hx-get="/models?provider={{.CatalogProvider}}&view={{.Filters.View}}&full=1"
+            hx-target="#models-browser"
+            hx-swap="outerHTML">
       × Clear preset
     </button>
   </div>
   {{end}}
 
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          {{- $s := .Filters.Sort}}{{- $d := .Filters.SortDir}}
-          <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
+  {{if eq .Filters.View "table"}}
+    {{template "models_table" .}}
+  {{else}}
+    {{template "models_cards" .}}
+  {{end}}
+</div>
+{{end}}
+
+{{define "models_table"}}
+<div class="table-wrap catalog-audit-table">
+  <table>
+    <thead>
+      <tr>
+        {{- $s := .Filters.Sort}}{{- $d := .Filters.SortDir}}
+        <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"id","dir":"{{if and (eq $s "id") (eq $d "asc")}}desc{{else}}asc{{end}}"}'
               style="cursor:pointer" title="Model identifier on OpenRouter (provider/model)">Model{{if eq $s "id"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
@@ -119,10 +163,9 @@
           <th hx-get="/models" hx-target="#models-content" hx-swap="outerHTML" hx-include="#models-filters"
               hx-vals='{"sort":"value","dir":"{{if and (eq $s "value") (eq $d "desc")}}asc{{else}}desc{{end}}"}'
               style="cursor:pointer" title="Quality per $ (higher = more bang per buck). Role-specific in Suggest mode (uses role's Pareto axes); generic agentic/prompt in browse mode.">Value{{if eq $s "value"}} {{if eq $d "asc"}}↑{{else}}↓{{end}}{{end}}</th>
-        </tr>
-      </thead>
-      {{template "models_tbody" .}}
-    </table>
-  </div>
+      </tr>
+    </thead>
+    {{template "models_tbody" .}}
+  </table>
 </div>
 {{end}}
