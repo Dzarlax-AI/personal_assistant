@@ -28,7 +28,7 @@
 {{define "models_cards"}}
 {{if .ModelSections}}
   {{range .ModelSections}}
-  <section class="catalog-card-section" data-section="{{.Key}}">
+  <section class="catalog-list-section" data-section="{{.Key}}">
     <div class="catalog-section-head">
       <div>
         <strong>{{.Title}}</strong>
@@ -36,7 +36,7 @@
       </div>
       <p>{{.Description}}</p>
     </div>
-    <div class="catalog-grid">
+    <div class="catalog-list">
       {{range .Models}}
         {{template "model_card" dict "Model" . "Root" $}}
       {{end}}
@@ -45,7 +45,7 @@
   {{end}}
 {{else}}
   {{if .Models}}
-  <div class="catalog-grid">
+  <div class="catalog-list">
     {{range .Models}}
       {{template "model_card" dict "Model" . "Root" $}}
     {{end}}
@@ -59,11 +59,14 @@
 {{define "model_card"}}
   {{$root := .Root}}
   {{with .Model}}
-  <article class="catalog-card" data-model-card>
-    <header class="catalog-card__header">
-      <div class="catalog-card__title">
-        <div class="model-id">{{.ID}}</div>
-        <div class="catalog-card__chips">
+  <article class="catalog-row" data-model-card>
+    <div class="catalog-row__identity">
+      <div class="catalog-row__title">
+        <div>
+          <div class="model-id">{{.ID}}</div>
+          {{if .Name}}<div class="catalog-row__name">{{.Name}}</div>{{end}}
+        </div>
+        <div class="catalog-row__chips">
           {{if .StatusLabel}}<span class="badge badge--neutral">{{.StatusLabel}}</span>{{end}}
           {{if .PolicyLabel}}<span class="badge badge--neutral">{{.PolicyLabel}}</span>{{end}}
           {{if .Vision}}<span class="badge badge--success" title="Vision">V</span>{{end}}
@@ -72,27 +75,26 @@
           {{if .Free}}<span class="badge badge--success" title="Free tier">FREE</span>{{end}}
         </div>
       </div>
-      <div class="catalog-card__price">
-        <span>{{priceUSD .PromptPrice}}</span>
-        <small>in / 1M</small>
-      </div>
-    </header>
+      {{if .Description}}<div class="catalog-row__description" title="{{.Description}}">{{.Description}}</div>{{end}}
+    </div>
 
-    {{if .PrimaryReason}}
-    <div class="catalog-card__why">Why: {{.PrimaryReason}}</div>
-    {{end}}
-    {{if .SecondaryReasons}}
-    <div class="catalog-card__reasons">
-      {{range .SecondaryReasons}}<span>{{.}}</span>{{end}}
+    <div class="catalog-row__decision">
+      {{if .PrimaryReason}}<div class="catalog-row__why">Why: {{.PrimaryReason}}</div>{{end}}
+      {{if .SecondaryReasons}}
+      <div class="catalog-row__reasons">
+        {{range .SecondaryReasons}}<span>{{.}}</span>{{end}}
+      </div>
+      {{end}}
+      {{if or .CheckStatus .Warnings}}
+      <div class="catalog-row__warnings">
+        {{if .CheckStatus}}<span>{{.CheckStatus}}{{if .CheckLatencyMS}} · {{.CheckLatencyMS}} ms{{end}}</span>{{end}}
+        {{range .Warnings}}<span>{{.}}</span>{{end}}
+      </div>
+      {{end}}
     </div>
-    {{end}}
-    {{if .Warnings}}
-    <div class="catalog-card__warnings">
-      {{range .Warnings}}<span>{{.}}</span>{{end}}
-    </div>
-    {{end}}
 
     <div class="catalog-metrics">
+      <div><span>in</span><strong>{{priceUSD .PromptPrice}}</strong></div>
       <div><span>out</span><strong>{{priceUSD .CompletionPrice}}</strong></div>
       <div><span>ctx</span><strong>{{ctxShort .ContextLength}}</strong></div>
       <div><span>quality</span><strong>{{if gt .AgenticIndex 0.0}}{{printf "%.0f" .AgenticIndex}} agent{{else if gt .CodingIndex 0.0}}{{printf "%.0f" .CodingIndex}} code{{else if gt .Score 0.0}}{{printf "%.0f" .Score}} intel{{else}}—{{end}}</strong></div>
@@ -101,7 +103,7 @@
     </div>
 
     {{if gt .Telemetry.Calls 0}}
-    <div class="catalog-card__telemetry">
+    <div class="catalog-row__telemetry">
       7d: {{.Telemetry.Calls}} calls · {{.Telemetry.AvgLatencyMS}} ms · {{printf "%.0f%%" .Telemetry.ErrorRatePct}} errors · {{printf "$%.4f" .Telemetry.CostUSD}}
     </div>
     {{end}}
@@ -115,9 +117,26 @@
   {{$root := .Root}}
   {{with .Model}}
   {{$modelID := .ID}}
+  {{$needsFreeCheck := and .Free (ne .Policy "free_verified")}}
   <div class="model-actions">
     <input type="hidden" name="model_id" value="{{.ID}}">
     <input type="hidden" name="provider" value="{{$root.CatalogProvider}}">
+    {{if and .Free (eq $root.CatalogProvider "openrouter")}}
+    <div class="model-actions__check">
+      <button class="btn btn--small {{if eq .Policy "free_verified"}}btn--ghost{{else}}btn--primary{{end}}"
+              hx-post="/models/check"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-target="#models-content"
+              hx-swap="outerHTML">
+        Check free
+      </button>
+      {{if .CheckStatus}}
+      <span class="model-check-status {{if eq .CheckStatus "free_verified"}}ok{{else}}warn{{end}}">
+        {{.CheckStatus}}{{if .CheckLatencyMS}} · {{.CheckLatencyMS}} ms{{end}}
+      </span>
+      {{end}}
+    </div>
+    {{end}}
     <div class="model-actions__override">
       <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note">
       <button class="btn btn--small btn--ghost"
@@ -143,6 +162,11 @@
     </div>
     <div class="assign-buttons">
       {{range $root.Slots}}
+      {{if $needsFreeCheck}}
+      <button class="btn btn--small btn--ghost" type="button" disabled title="Free model must pass check before routing">
+        → {{.Name}}
+      </button>
+      {{else}}
       <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
               hx-post="/slots/{{.Name}}/assign"
               hx-include="closest [data-model-card]"
@@ -150,6 +174,7 @@
               hx-swap="innerHTML">
         {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
       </button>
+      {{end}}
       {{end}}
     </div>
   </div>
@@ -163,6 +188,8 @@
   <tr data-model-card>
     <td>
       <div class="model-id">{{.ID}}</div>
+      {{if .Name}}<div style="margin-top:2px;color:var(--text-secondary);font-size:0.78rem;">{{.Name}}</div>{{end}}
+      {{if .Description}}<div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;max-width:36rem;">{{.Description}}</div>{{end}}
       <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
         {{if .StatusLabel}}<span class="badge badge--neutral">{{.StatusLabel}}</span>{{end}}
         {{if .PolicyLabel}}<span class="badge badge--neutral">{{.PolicyLabel}}</span>{{end}}
@@ -171,7 +198,12 @@
       </div>
       {{if .Warnings}}
       <div style="margin-top:4px;color:var(--warning, #9a5b00);font-size:0.78rem;">
+        {{if .CheckStatus}}<span>{{.CheckStatus}}{{if .CheckLatencyMS}} · {{.CheckLatencyMS}} ms{{end}}</span> {{end}}
         {{range .Warnings}}<span>{{.}}</span> {{end}}
+      </div>
+      {{else if .CheckStatus}}
+      <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
+        {{.CheckStatus}}{{if .CheckLatencyMS}} · {{.CheckLatencyMS}} ms{{end}}
       </div>
       {{end}}
       {{if gt .Telemetry.Calls 0}}

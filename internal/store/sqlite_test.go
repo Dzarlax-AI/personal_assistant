@@ -184,6 +184,8 @@ func TestSQLite_Capabilities(t *testing.T) {
 	ctx := context.Background()
 
 	in := llm.Capabilities{
+		Name:            "Claude Sonnet 4.5",
+		Description:     "A balanced frontier model for agentic coding and tool use.",
 		Vision:          true,
 		Tools:           true,
 		Reasoning:       false,
@@ -242,12 +244,16 @@ func TestSQLite_Capabilities(t *testing.T) {
 	// Upsert semantics — same key, new values overwrite.
 	updated := in
 	updated.PromptPrice = 5.0
+	updated.Description = "Updated metadata."
 	if err := s.PutCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5", updated); err != nil {
 		t.Fatalf("put update: %v", err)
 	}
 	got, _, _ = s.GetCapabilities(ctx, "openrouter", "anthropic/claude-sonnet-4.5")
 	if got.PromptPrice != 5.0 {
 		t.Errorf("upsert did not overwrite: got %v", got.PromptPrice)
+	}
+	if got.Description != "Updated metadata." {
+		t.Errorf("upsert did not overwrite description: got %q", got.Description)
 	}
 }
 

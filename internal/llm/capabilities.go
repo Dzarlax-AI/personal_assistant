@@ -15,6 +15,8 @@ import (
 // All fields are populated from provider /models endpoints; when a field is
 // unknown (e.g. legacy provider without a models listing) it stays at zero value.
 type Capabilities struct {
+	Name            string
+	Description     string
 	Vision          bool
 	Tools           bool
 	Reasoning       bool
@@ -92,6 +94,8 @@ func FetchOpenRouterModels(ctx context.Context, apiKey string) (map[string]Capab
 type openRouterModelsResponse struct {
 	Data []struct {
 		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Description   string `json:"description"`
 		ContextLength int    `json:"context_length"`
 		Architecture  struct {
 			InputModalities  []string `json:"input_modalities"`
@@ -116,6 +120,8 @@ func parseOpenRouterModels(body []byte) (map[string]Capabilities, error) {
 			continue
 		}
 		out[m.ID] = Capabilities{
+			Name:            strings.TrimSpace(m.Name),
+			Description:     strings.TrimSpace(m.Description),
 			Vision:          containsStr(m.Architecture.InputModalities, "image"),
 			Tools:           containsStr(m.SupportedParameters, "tools"),
 			Reasoning:       containsStr(m.SupportedParameters, "reasoning"),

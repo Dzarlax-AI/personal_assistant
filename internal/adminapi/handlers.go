@@ -32,6 +32,8 @@ type uiSlot struct {
 
 type uiModel struct {
 	ID               string
+	Name             string
+	Description      string
 	PromptPrice      float64
 	CompletionPrice  float64
 	ContextLength    int
@@ -58,6 +60,10 @@ type uiModel struct {
 	Warnings         []string
 	Telemetry        modelTelemetry
 	Market           llm.OpenRouterMarketSignal
+	CheckStatus      string
+	CheckedAt        string
+	CheckLatencyMS   int64
+	CheckError       string
 	StatusLabel      string
 	PolicyLabel      string
 	PrimaryReason    string
@@ -94,7 +100,7 @@ type uiFilters struct {
 	ValueLeaderHint   string // e.g. "85% quality @ 30% price" (preset path only)
 	Sort              string // active sort column: "prompt", "completion", "score", "context", "id"
 	SortDir           string // "asc" or "desc"
-	View              string // "cards" (default) or "table"
+	View              string // "compact" (default) or "table"
 }
 
 type uiModelSection struct {
@@ -145,6 +151,52 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if err := render(w, view, data); err != nil {
 		s.logger.Error("render models_content", "err", err)
 		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleModelCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.settings == nil {
+		http.Error(w, "settings store not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "parse form", http.StatusBadRequest)
+		return
+	}
+	provider := strings.TrimSpace(r.FormValue("provider"))
+	if provider == "" {
+		provider = "openrouter"
+	}
+	modelID := strings.TrimSpace(r.FormValue("model_id"))
+	if modelID == "" {
+		http.Error(w, "model_id required", http.StatusBadRequest)
+		return
+	}
+	if provider != "openrouter" || !isFreeVariant(modelID) {
+		http.Error(w, "only free OpenRouter models can be checked here", http.StatusBadRequest)
+		return
+	}
+
+	caps := s.lookupCapsFor(r.Context(), provider, modelID)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	status := s.probeModel(ctx, provider, modelID, caps)
+	if err := s.saveModelCheck(ctx, provider, modelID, status); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+
+	next := r.Clone(r.Context())
+	next.URL = cloneURL(r.URL)
+	next.URL.RawQuery = r.Form.Encode()
+	data := s.buildIndexData(next)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewModelsContent, data); err != nil {
+		s.logger.Error("render models after check", "err", err)
 	}
 }
 
@@ -237,6 +289,13 @@ func (s *Server) handleSlotAssign(w http.ResponseWriter, r *http.Request) {
 	if providerType == "" {
 		if mc, ok := s.cfgRef.Models[slot]; ok {
 			providerType = mc.Provider
+		}
+	}
+	if providerType == "openrouter" && isFreeVariant(modelID) {
+		check := s.modelCheckStatus(r.Context(), providerType, modelID)
+		if check.Status != "free_verified" {
+			http.Error(w, "free model must pass check before routing", http.StatusBadRequest)
+			return
 		}
 	}
 	caps := s.lookupCapsFor(r.Context(), providerType, modelID)
@@ -372,7 +431,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	}
 	viewMode := q.Get("view")
 	if viewMode != "table" {
-		viewMode = "cards"
+		viewMode = "compact"
 	}
 
 	ctx5, cancel5 := context.WithTimeout(r.Context(), 5*time.Second)
@@ -414,6 +473,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		models = filterModelOverrides(models, catalogProv, overrides, true)
 		attachMarketSignals(models, marketSignals)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
+		attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
 		decorateModelDisplay(models, preset)
 		sections := buildModelSections(models, true)
 		filters := uiFilters{
@@ -497,6 +557,8 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		}
 		m := uiModel{
 			ID:              id,
+			Name:            c.Name,
+			Description:     c.Description,
 			PromptPrice:     c.PromptPrice,
 			CompletionPrice: c.CompletionPrice,
 			ContextLength:   c.ContextLength,
@@ -528,6 +590,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	models = filterModelOverrides(models, catalogProv, overrides, f.Search == "")
 	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
+	attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
 	decorateModelDisplay(models, "")
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
@@ -707,6 +770,43 @@ func attachModelTelemetry(models []uiModel, telemetry map[string]modelTelemetry)
 			models[i].Telemetry = t
 		}
 	}
+}
+
+func attachModelChecks(models []uiModel, provider string, checks map[string]modelCheckStatus) {
+	if len(models) == 0 || len(checks) == 0 {
+		return
+	}
+	for i := range models {
+		if !models[i].Free {
+			continue
+		}
+		check := checks[modelCheckKey(provider, models[i].ID)]
+		if check.Status == "" {
+			continue
+		}
+		models[i].CheckStatus = check.Status
+		models[i].CheckedAt = check.CheckedAt
+		models[i].CheckLatencyMS = check.LatencyMS
+		models[i].CheckError = check.Error
+		if check.Status != "free_unverified" {
+			models[i].Policy = check.Status
+			models[i].Warnings = withoutWarning(models[i].Warnings, "free model: validate availability before routing")
+		}
+		if check.Error != "" {
+			models[i].Warnings = append(models[i].Warnings, check.Error)
+		}
+	}
+}
+
+func withoutWarning(warnings []string, remove string) []string {
+	out := warnings[:0]
+	for _, warning := range warnings {
+		if warning == remove {
+			continue
+		}
+		out = append(out, warning)
+	}
+	return out
 }
 
 func (s *Server) loadMarketSignals(ctx context.Context, provider string) map[string]llm.OpenRouterMarketSignal {

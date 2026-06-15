@@ -183,6 +183,8 @@ func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
 		Slots:   []uiSlot{{Name: "default-or", ModelID: "qwen/qwen3.5-plus"}},
 		Models: []uiModel{{
 			ID:              "qwen/qwen3.5-plus",
+			Name:            "Qwen 3.5 Plus",
+			Description:     "Balanced multilingual model for tool-heavy assistant workflows.",
 			PromptPrice:     1.0,
 			CompletionPrice: 3.0,
 			ContextLength:   128000,
@@ -193,19 +195,22 @@ func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
 		CatalogProvider: "openrouter",
 	}
 
-	t.Run("cards default", func(t *testing.T) {
+	t.Run("compact default", func(t *testing.T) {
 		data := base
-		data.Filters.View = "cards"
+		data.Filters.View = "compact"
 		var buf bytes.Buffer
 		if err := render(&buf, viewModelsBrowser, data); err != nil {
 			t.Fatal(err)
 		}
 		html := buf.String()
-		if !strings.Contains(html, "catalog-grid") || !strings.Contains(html, "catalog-card") {
-			t.Fatalf("card view missing catalog cards: %s", html)
+		if !strings.Contains(html, "catalog-list") || !strings.Contains(html, "catalog-row") {
+			t.Fatalf("compact view missing catalog rows: %s", html)
+		}
+		if !strings.Contains(html, "Balanced multilingual model") {
+			t.Fatalf("compact view missing model description: %s", html)
 		}
 		if strings.Contains(html, "catalog-audit-table") {
-			t.Fatalf("card view should not render audit table")
+			t.Fatalf("compact view should not render audit table")
 		}
 	})
 
@@ -220,14 +225,14 @@ func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
 		if !strings.Contains(html, "catalog-audit-table") {
 			t.Fatalf("table view missing audit table: %s", html)
 		}
-		if strings.Contains(html, "catalog-grid") || strings.Contains(html, "catalog-card") {
-			t.Fatalf("table view should not render card layout")
+		if strings.Contains(html, "catalog-list") || strings.Contains(html, "catalog-row") {
+			t.Fatalf("table view should not render compact layout")
 		}
 	})
 
 	t.Run("preset state is preserved except clear", func(t *testing.T) {
 		data := base
-		data.Filters.View = "cards"
+		data.Filters.View = "compact"
 		data.Filters.ActivePreset = "default"
 		var buf bytes.Buffer
 		if err := render(&buf, viewModelsBrowser, data); err != nil {
@@ -237,10 +242,128 @@ func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
 		if !strings.Contains(html, `name="preset" value="default"`) {
 			t.Fatalf("active preset should be submitted with filters and view toggle: %s", html)
 		}
-		if !strings.Contains(html, `hx-get="/models?provider=openrouter&view=cards&full=1"`) {
+		if !strings.Contains(html, `hx-get="/models?provider=openrouter&view=compact&full=1"`) {
 			t.Fatalf("clear preset should refresh browser without preset: %s", html)
 		}
 	})
+}
+
+func TestModelsBrowserRendersFreeCheckAction(t *testing.T) {
+	data := indexData{
+		Slots: []uiSlot{{Name: "default-or", ModelID: "qwen/qwen3.5-plus"}},
+		Models: []uiModel{{
+			ID:              "qwen/qwen3.5-flash:free",
+			Description:     "Free endpoint for quick routing checks.",
+			PromptPrice:     0,
+			CompletionPrice: 0,
+			ContextLength:   64000,
+			Tools:           true,
+			Free:            true,
+			Policy:          "free_degraded",
+			CheckStatus:     "free_degraded",
+			CheckLatencyMS:  321,
+			StatusLabel:     "Untested",
+			PolicyLabel:     "Free degraded",
+			PrimaryReason:   "Free endpoint degraded",
+		}},
+		Filters:         uiFilters{View: "compact"},
+		CatalogProvider: "openrouter",
+	}
+	var buf bytes.Buffer
+	if err := render(&buf, viewModelsBrowser, data); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `hx-post="/models/check"`) || !strings.Contains(html, "Check free") {
+		t.Fatalf("free check action missing: %s", html)
+	}
+	if !strings.Contains(html, "Free model must pass check before routing") {
+		t.Fatalf("unverified free model should not render active assign buttons: %s", html)
+	}
+	if !strings.Contains(html, "free_degraded") || !strings.Contains(html, "321 ms") {
+		t.Fatalf("check status not rendered: %s", html)
+	}
+}
+
+func TestWebModelCheckPersistsFreeModelStatus(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	settings := &fakeSettingsStore{values: map[string]string{}}
+	s.settings = settings
+	s.modelProbe = func(context.Context, string, string, llm.Capabilities) modelCheckStatus {
+		return modelCheckStatus{
+			Status:    "free_verified",
+			CheckedAt: "2026-06-15T12:00:00Z",
+			LatencyMS: 88,
+		}
+	}
+
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "qwen/qwen3.5-flash:free")
+	form.Set("view", "compact")
+	req := httptest.NewRequest(http.MethodPost, "/models/check", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleModelCheck(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	checks := s.loadModelChecks(context.Background())
+	got := checks[modelCheckKey("openrouter", "qwen/qwen3.5-flash:free")]
+	if got.Status != "free_verified" || got.LatencyMS != 88 {
+		t.Fatalf("status not persisted: %+v", checks)
+	}
+	if !strings.Contains(rec.Body.String(), "free_verified") {
+		t.Fatalf("response should render updated check status: %s", rec.Body.String())
+	}
+}
+
+func TestWebSlotAssignRejectsUnverifiedFreeModel(t *testing.T) {
+	s, provider := newTGModelTestServer(t)
+	s.settings = &fakeSettingsStore{values: map[string]string{}}
+
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "qwen/qwen3.5-flash:free")
+	req := httptest.NewRequest(http.MethodPost, "/slots/default-or/assign", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleSlotAssign(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if provider.CurrentModel() == "qwen/qwen3.5-flash:free" {
+		t.Fatalf("unverified free model should not be assigned")
+	}
+}
+
+func TestWebSlotAssignAllowsVerifiedFreeModel(t *testing.T) {
+	s, provider := newTGModelTestServer(t)
+	checks := map[string]modelCheckStatus{
+		modelCheckKey("openrouter", "qwen/qwen3.5-flash:free"): {Status: "free_verified", CheckedAt: time.Now().Format(time.RFC3339)},
+	}
+	data, err := json.Marshal(checks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelChecks: string(data)}}
+
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "qwen/qwen3.5-flash:free")
+	req := httptest.NewRequest(http.MethodPost, "/slots/default-or/assign", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleSlotAssign(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if provider.CurrentModel() != "qwen/qwen3.5-flash:free" {
+		t.Fatalf("model = %q, want free model", provider.CurrentModel())
+	}
 }
 
 func signedTGInitData(t *testing.T, token string, userID int64, authTime time.Time) string {
