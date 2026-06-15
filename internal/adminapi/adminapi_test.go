@@ -209,6 +209,9 @@ func TestModelsBrowserRendersCardAndTableModes(t *testing.T) {
 		if !strings.Contains(html, "Balanced multilingual model") {
 			t.Fatalf("compact view missing model description: %s", html)
 		}
+		if !strings.Contains(html, "<details class=\"catalog-row__description\">") || !strings.Contains(html, "catalog-row__description-full") {
+			t.Fatalf("compact view should render expandable full description: %s", html)
+		}
 		if strings.Contains(html, "catalog-audit-table") {
 			t.Fatalf("compact view should not render audit table")
 		}

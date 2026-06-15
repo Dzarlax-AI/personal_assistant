@@ -75,7 +75,12 @@
           {{if .Free}}<span class="badge badge--success" title="Free tier">FREE</span>{{end}}
         </div>
       </div>
-      {{if .Description}}<div class="catalog-row__description" title="{{.Description}}">{{.Description}}</div>{{end}}
+      {{if .Description}}
+      <details class="catalog-row__description">
+        <summary>{{.Description}}</summary>
+        <div class="catalog-row__description-full">{{.Description}}</div>
+      </details>
+      {{end}}
     </div>
 
     <div class="catalog-row__decision">
