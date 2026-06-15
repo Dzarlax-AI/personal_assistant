@@ -33,9 +33,10 @@
     <td>
       <div class="model-id">{{.ID}}</div>
       <div style="margin-top:4px;color:var(--text-secondary);font-size:0.78rem;">
-        {{if .Section}}<span class="badge badge--neutral">{{.Section}}</span>{{end}}
-        {{if .Policy}}<span class="badge badge--neutral">{{.Policy}}</span>{{end}}
-        {{range .Reasons}}<span>{{.}}</span> {{end}}
+        {{if .StatusLabel}}<span class="badge badge--neutral">{{.StatusLabel}}</span>{{end}}
+        {{if .PolicyLabel}}<span class="badge badge--neutral">{{.PolicyLabel}}</span>{{end}}
+        {{if .PrimaryReason}}<span>Why: {{.PrimaryReason}}</span>{{end}}
+        {{range .SecondaryReasons}}<span>{{.}}</span> {{end}}
       </div>
       {{if .Warnings}}
       <div style="margin-top:4px;color:var(--warning, #9a5b00);font-size:0.78rem;">

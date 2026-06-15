@@ -586,17 +586,17 @@
           var chips = document.createElement("div");
           chips.className = "chips";
           [
-            model.current ? "current" : "",
-            model.recommended ? "recommended" : "",
-            model.section || "",
-            model.policy || "",
+            model.status_label || (model.current ? "Current" : ""),
+            model.policy_label || "",
             model.tools ? "tools" : "",
             model.vision ? "vision" : "",
             model.reasoning ? "reasoning" : "",
             model.market && model.market.rank ? "market #" + model.market.rank : "",
             model.market && !model.market.rank && (model.market.share || model.market.score) ? "market" : "",
             model.agentic_index ? "agentic " + Math.round(model.agentic_index) : ""
-          ].filter(Boolean).forEach(function (v) {
+          ].filter(Boolean).filter(function (v, i, arr) {
+            return arr.indexOf(v) === i;
+          }).forEach(function (v) {
             var chip = document.createElement("span");
             chip.className = "chip";
             chip.textContent = v;
@@ -605,10 +605,15 @@
           body.appendChild(id);
           body.appendChild(meta);
           body.appendChild(chips);
-          if (model.reasons && model.reasons.length) {
+          if (model.primary_reason || (model.secondary_reasons && model.secondary_reasons.length)) {
             var reasons = document.createElement("div");
             reasons.className = "model-card__note";
-            reasons.textContent = model.reasons.slice(0, 4).join(" · ");
+            var why = [];
+            if (model.primary_reason) why.push("Why: " + model.primary_reason);
+            (model.secondary_reasons || []).slice(0, 3).forEach(function (reason) {
+              why.push(reason);
+            });
+            reasons.textContent = why.join(" · ");
             body.appendChild(reasons);
           }
           if (model.warnings && model.warnings.length) {

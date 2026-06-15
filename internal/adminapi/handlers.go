@@ -31,33 +31,37 @@ type uiSlot struct {
 }
 
 type uiModel struct {
-	ID              string
-	PromptPrice     float64
-	CompletionPrice float64
-	ContextLength   int
-	Vision          bool
-	Tools           bool
-	Reasoning       bool
-	Free            bool
-	Score           float64 // AA Intelligence Index
-	CodingIndex     float64 // AA Coding Index
-	AgenticIndex    float64 // AA Agentic Index
-	SpeedTPS        float64 // median output tokens/sec
-	TTFT            float64 // median time-to-first-token, seconds
-	ThinkTime       float64 // TTFA - TTFT — time spent thinking before answer starts (reasoners only)
-	AAPriceBlended  float64 // AA's reference blended 3:1 input/output price (USD / 1M)
-	MarkupPct       float64 // (OR blended - AA blended) / AA blended × 100 — positive means OR charges more
-	EffectivePrompt float64 // 0.9 × prompt + 0.1 × multimodal_slot.prompt for non-vision candidates under roles that route images elsewhere
-	ValuePerDollar  float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
-	Recommended     bool
-	Source          string
-	Policy          string
-	Section         string
-	OverrideNote    string
-	Reasons         []string
-	Warnings        []string
-	Telemetry       modelTelemetry
-	Market          llm.OpenRouterMarketSignal
+	ID               string
+	PromptPrice      float64
+	CompletionPrice  float64
+	ContextLength    int
+	Vision           bool
+	Tools            bool
+	Reasoning        bool
+	Free             bool
+	Score            float64 // AA Intelligence Index
+	CodingIndex      float64 // AA Coding Index
+	AgenticIndex     float64 // AA Agentic Index
+	SpeedTPS         float64 // median output tokens/sec
+	TTFT             float64 // median time-to-first-token, seconds
+	ThinkTime        float64 // TTFA - TTFT — time spent thinking before answer starts (reasoners only)
+	AAPriceBlended   float64 // AA's reference blended 3:1 input/output price (USD / 1M)
+	MarkupPct        float64 // (OR blended - AA blended) / AA blended × 100 — positive means OR charges more
+	EffectivePrompt  float64 // 0.9 × prompt + 0.1 × multimodal_slot.prompt for non-vision candidates under roles that route images elsewhere
+	ValuePerDollar   float64 // quality / prompt price (role-specific in preset path; agent/$ in browse path)
+	Recommended      bool
+	Source           string
+	Policy           string
+	Section          string
+	OverrideNote     string
+	Reasons          []string
+	Warnings         []string
+	Telemetry        modelTelemetry
+	Market           llm.OpenRouterMarketSignal
+	StatusLabel      string
+	PolicyLabel      string
+	PrimaryReason    string
+	SecondaryReasons []string
 }
 
 type modelTelemetry struct {
@@ -405,6 +409,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		models = filterModelOverrides(models, catalogProv, overrides, true)
 		attachMarketSignals(models, marketSignals)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
+		decorateModelDisplay(models, preset)
 		sections := buildModelSections(models, true)
 		filters := uiFilters{
 			ActivePreset:      preset,
@@ -516,6 +521,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	models = filterModelOverrides(models, catalogProv, overrides, f.Search == "")
 	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
+	decorateModelDisplay(models, "")
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
 		var less bool

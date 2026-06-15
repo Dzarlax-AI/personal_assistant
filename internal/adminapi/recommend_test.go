@@ -226,6 +226,50 @@ func TestModelSectionsSplitRecommendationBuckets(t *testing.T) {
 	}
 }
 
+func TestModelDisplayDedupesRecommendedInternals(t *testing.T) {
+	m := uiModel{
+		ID:          "deepseek/deepseek-v3.2",
+		Recommended: true,
+		Section:     "recommended",
+		Policy:      "recommended",
+		Reasons:     []string{"tool calling", "AA coding 35", "ctx 128k"},
+	}
+
+	got := modelDisplayFor(m, "default", false)
+	if got.StatusLabel != "Recommended" {
+		t.Fatalf("status = %q, want Recommended", got.StatusLabel)
+	}
+	if got.PolicyLabel != "" {
+		t.Fatalf("policy label = %q, want empty duplicate-suppressed label", got.PolicyLabel)
+	}
+	if got.PrimaryReason != "Pareto frontier for default" {
+		t.Fatalf("primary reason = %q", got.PrimaryReason)
+	}
+	if containsString(got.SecondaryReasons, "recommended") || containsString(got.SecondaryReasons, "Pareto frontier for default") {
+		t.Fatalf("secondary reasons contain duplicated recommendation internals: %+v", got.SecondaryReasons)
+	}
+}
+
+func TestModelDisplayKeepsCatalogCandidateStatus(t *testing.T) {
+	m := uiModel{
+		ID:      "qwen/qwen3.5-plus",
+		Source:  "catalog",
+		Policy:  "candidate",
+		Reasons: []string{"tool calling", "AA intelligence 90"},
+	}
+
+	got := modelDisplayFor(m, "default", false)
+	if got.StatusLabel != "Candidate" {
+		t.Fatalf("status = %q, want Candidate for plain catalog result", got.StatusLabel)
+	}
+	if got.PolicyLabel != "" {
+		t.Fatalf("policy label = %q, want empty candidate label", got.PolicyLabel)
+	}
+	if got.PrimaryReason != "tool calling" {
+		t.Fatalf("primary reason = %q, want first catalog reason", got.PrimaryReason)
+	}
+}
+
 func TestSectionDiversityCapsModelFamilies(t *testing.T) {
 	models := []uiModel{
 		{ID: "google/gemini-2.5-pro"},
@@ -245,6 +289,15 @@ func TestSectionDiversityCapsModelFamilies(t *testing.T) {
 	if !containsModel(got, "x-ai/grok-4.3") {
 		t.Fatalf("non-Gemini alternative should remain visible: %+v", got)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDefaultPresetUsesCodingWhenAgenticIsMissing(t *testing.T) {

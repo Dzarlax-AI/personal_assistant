@@ -58,34 +58,38 @@ type tgAdminRoute struct {
 }
 
 type tgAdminModel struct {
-	ID              string                     `json:"id"`
-	Provider        string                     `json:"provider"`
-	PromptPrice     float64                    `json:"prompt_price"`
-	CompletionPrice float64                    `json:"completion_price"`
-	ContextLength   int                        `json:"context_length"`
-	Vision          bool                       `json:"vision"`
-	Tools           bool                       `json:"tools"`
-	Reasoning       bool                       `json:"reasoning"`
-	Free            bool                       `json:"free"`
-	Score           float64                    `json:"score"`
-	AgenticIndex    float64                    `json:"agentic_index"`
-	SpeedTPS        float64                    `json:"speed_tps"`
-	TTFT            float64                    `json:"ttft"`
-	ValuePerDollar  float64                    `json:"value_per_dollar"`
-	Recommended     bool                       `json:"recommended"`
-	Current         bool                       `json:"current"`
-	Source          string                     `json:"source,omitempty"`
-	Policy          string                     `json:"policy,omitempty"`
-	Section         string                     `json:"section,omitempty"`
-	OverrideNote    string                     `json:"override_note,omitempty"`
-	Reasons         []string                   `json:"reasons,omitempty"`
-	Warnings        []string                   `json:"warnings,omitempty"`
-	Telemetry       modelTelemetry             `json:"telemetry,omitempty"`
-	Market          llm.OpenRouterMarketSignal `json:"market,omitempty"`
-	CheckStatus     string                     `json:"check_status,omitempty"`
-	CheckedAt       string                     `json:"checked_at,omitempty"`
-	CheckLatencyMS  int64                      `json:"check_latency_ms,omitempty"`
-	CheckError      string                     `json:"check_error,omitempty"`
+	ID               string                     `json:"id"`
+	Provider         string                     `json:"provider"`
+	PromptPrice      float64                    `json:"prompt_price"`
+	CompletionPrice  float64                    `json:"completion_price"`
+	ContextLength    int                        `json:"context_length"`
+	Vision           bool                       `json:"vision"`
+	Tools            bool                       `json:"tools"`
+	Reasoning        bool                       `json:"reasoning"`
+	Free             bool                       `json:"free"`
+	Score            float64                    `json:"score"`
+	AgenticIndex     float64                    `json:"agentic_index"`
+	SpeedTPS         float64                    `json:"speed_tps"`
+	TTFT             float64                    `json:"ttft"`
+	ValuePerDollar   float64                    `json:"value_per_dollar"`
+	Recommended      bool                       `json:"recommended"`
+	Current          bool                       `json:"current"`
+	Source           string                     `json:"source,omitempty"`
+	Policy           string                     `json:"policy,omitempty"`
+	Section          string                     `json:"section,omitempty"`
+	OverrideNote     string                     `json:"override_note,omitempty"`
+	Reasons          []string                   `json:"reasons,omitempty"`
+	Warnings         []string                   `json:"warnings,omitempty"`
+	Telemetry        modelTelemetry             `json:"telemetry,omitempty"`
+	Market           llm.OpenRouterMarketSignal `json:"market,omitempty"`
+	StatusLabel      string                     `json:"status_label,omitempty"`
+	PolicyLabel      string                     `json:"policy_label,omitempty"`
+	PrimaryReason    string                     `json:"primary_reason,omitempty"`
+	SecondaryReasons []string                   `json:"secondary_reasons,omitempty"`
+	CheckStatus      string                     `json:"check_status,omitempty"`
+	CheckedAt        string                     `json:"checked_at,omitempty"`
+	CheckLatencyMS   int64                      `json:"check_latency_ms,omitempty"`
+	CheckError       string                     `json:"check_error,omitempty"`
 }
 
 type tgAdminModelsResponse struct {
@@ -448,7 +452,7 @@ func (s *Server) buildTGAdminModels(ctx context.Context, role, provider, query s
 	}
 	resp.Models = make([]tgAdminModel, 0, len(models))
 	for _, m := range models {
-		resp.Models = append(resp.Models, tgModelFromUI(provider, m, current, checks))
+		resp.Models = append(resp.Models, tgModelFromUI(provider, role, m, current, checks))
 	}
 	if currentProvider != "" && currentProvider != provider && query == "" {
 		resp.Description = strings.TrimSpace(resp.Description + " Current role uses " + currentProvider + "; choosing a model here will retarget this role's slot.")
@@ -577,7 +581,7 @@ func hasRecommendedModel(models []uiModel) bool {
 	return false
 }
 
-func tgModelFromUI(provider string, m uiModel, current string, checks map[string]modelCheckStatus) tgAdminModel {
+func tgModelFromUI(provider, role string, m uiModel, current string, checks map[string]modelCheckStatus) tgAdminModel {
 	check := checks[modelCheckKey(provider, m.ID)]
 	if check.Status != "" && m.Free && check.Status != "free_unverified" {
 		m.Policy = check.Status
@@ -586,35 +590,41 @@ func tgModelFromUI(provider string, m uiModel, current string, checks map[string
 			m.Reasons = append(m.Reasons, "probe passed")
 		}
 	}
+	currentModel := m.ID == current
+	applyModelDisplay(&m, role, currentModel)
 	return tgAdminModel{
-		ID:              m.ID,
-		Provider:        provider,
-		PromptPrice:     m.PromptPrice,
-		CompletionPrice: m.CompletionPrice,
-		ContextLength:   m.ContextLength,
-		Vision:          m.Vision,
-		Tools:           m.Tools,
-		Reasoning:       m.Reasoning,
-		Free:            m.Free,
-		Score:           m.Score,
-		AgenticIndex:    m.AgenticIndex,
-		SpeedTPS:        m.SpeedTPS,
-		TTFT:            m.TTFT,
-		ValuePerDollar:  m.ValuePerDollar,
-		Recommended:     m.Recommended,
-		Current:         m.ID == current,
-		Source:          m.Source,
-		Policy:          m.Policy,
-		Section:         modelSectionKey(m),
-		OverrideNote:    m.OverrideNote,
-		Reasons:         m.Reasons,
-		Warnings:        m.Warnings,
-		Telemetry:       m.Telemetry,
-		Market:          m.Market,
-		CheckStatus:     check.Status,
-		CheckedAt:       check.CheckedAt,
-		CheckLatencyMS:  check.LatencyMS,
-		CheckError:      check.Error,
+		ID:               m.ID,
+		Provider:         provider,
+		PromptPrice:      m.PromptPrice,
+		CompletionPrice:  m.CompletionPrice,
+		ContextLength:    m.ContextLength,
+		Vision:           m.Vision,
+		Tools:            m.Tools,
+		Reasoning:        m.Reasoning,
+		Free:             m.Free,
+		Score:            m.Score,
+		AgenticIndex:     m.AgenticIndex,
+		SpeedTPS:         m.SpeedTPS,
+		TTFT:             m.TTFT,
+		ValuePerDollar:   m.ValuePerDollar,
+		Recommended:      m.Recommended,
+		Current:          currentModel,
+		Source:           m.Source,
+		Policy:           m.Policy,
+		Section:          modelSectionKey(m),
+		OverrideNote:     m.OverrideNote,
+		Reasons:          m.Reasons,
+		Warnings:         m.Warnings,
+		Telemetry:        m.Telemetry,
+		Market:           m.Market,
+		StatusLabel:      m.StatusLabel,
+		PolicyLabel:      m.PolicyLabel,
+		PrimaryReason:    m.PrimaryReason,
+		SecondaryReasons: m.SecondaryReasons,
+		CheckStatus:      check.Status,
+		CheckedAt:        check.CheckedAt,
+		CheckLatencyMS:   check.LatencyMS,
+		CheckError:       check.Error,
 	}
 }
 
