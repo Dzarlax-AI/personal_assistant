@@ -124,11 +124,20 @@
   <div class="model-actions">
     <input type="hidden" name="model_id" value="{{.ID}}">
     <input type="hidden" name="provider" value="{{$root.CatalogProvider}}">
+    <input type="hidden" name="view" value="{{$root.Filters.View}}">
+    {{if $root.Filters.ActivePreset}}<input type="hidden" name="preset" value="{{$root.Filters.ActivePreset}}">{{end}}
+    {{if $root.Filters.Search}}<input type="hidden" name="q" value="{{$root.Filters.Search}}">{{end}}
+    {{if $root.Filters.Free}}<input type="hidden" name="free" value="on">{{end}}
+    {{if $root.Filters.Vision}}<input type="hidden" name="vision" value="on">{{end}}
+    {{if $root.Filters.Tools}}<input type="hidden" name="tools" value="on">{{end}}
+    {{if $root.Filters.Reasoning}}<input type="hidden" name="reasoning" value="on">{{end}}
+    {{if $root.Filters.Sort}}<input type="hidden" name="sort" value="{{$root.Filters.Sort}}">{{end}}
+    {{if $root.Filters.SortDir}}<input type="hidden" name="dir" value="{{$root.Filters.SortDir}}">{{end}}
     {{if and .Free (eq $root.CatalogProvider "openrouter")}}
     <div class="model-actions__check">
       <button class="btn btn--small {{if eq .Policy "free_verified"}}btn--ghost{{else}}btn--primary{{end}}"
               hx-post="/models/check"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__check"
@@ -149,7 +158,7 @@
       <input type="hidden" name="confirm_paid_eval" value="1">
       <button class="btn btn--small btn--ghost"
               hx-post="/models/eval"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__eval"
@@ -164,7 +173,7 @@
       </label>
       <button class="btn btn--small btn--ghost"
               hx-post="/models/eval"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__eval"
@@ -178,20 +187,20 @@
       <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note">
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-vals='{"state":"allow"}'
               hx-target="#models-content"
               hx-swap="outerHTML">Allow</button>
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-vals='{"state":"deny"}'
               hx-target="#models-content"
               hx-swap="outerHTML">Deny</button>
       {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest .model-actions"
+              hx-include="closest .model-actions"
               hx-vals='{"state":""}'
               hx-target="#models-content"
               hx-swap="outerHTML">Clear</button>
