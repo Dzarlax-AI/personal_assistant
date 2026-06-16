@@ -66,6 +66,7 @@ type uiModel struct {
 	CheckedAt        string
 	CheckLatencyMS   int64
 	CheckError       string
+	EvalStatus       modelEvalStatus
 	StatusLabel      string
 	PolicyLabel      string
 	PrimaryReason    string
@@ -476,6 +477,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 		attachMarketSignals(models, marketSignals)
 		attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 		attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
+		attachModelEvals(models, catalogProv, s.loadModelEvals(ctx5))
 		s.enrichVisibleDescriptions(ctx5, catalogProv, models)
 		decorateModelDisplay(models, preset)
 		sections := buildModelSections(models, true)
@@ -594,6 +596,7 @@ func (s *Server) buildIndexData(r *http.Request) indexData {
 	attachMarketSignals(models, marketSignals)
 	attachModelTelemetry(models, s.loadModelTelemetry(ctx5, catalogProv))
 	attachModelChecks(models, catalogProv, s.loadModelChecks(ctx5))
+	attachModelEvals(models, catalogProv, s.loadModelEvals(ctx5))
 	asc := sortDir == "asc"
 	sort.Slice(models, func(i, j int) bool {
 		var less bool
@@ -676,6 +679,17 @@ func (s *Server) enrichVisibleDescriptions(ctx context.Context, provider string,
 		}
 		if err := s.capStore.PutCapabilities(ctx, provider, models[i].ID, caps); err != nil {
 			s.logger.Debug("openrouter description cache update failed", "model", models[i].ID, "err", err)
+		}
+	}
+}
+
+func attachModelEvals(models []uiModel, provider string, evals map[string]modelEvalStatus) {
+	if len(models) == 0 || len(evals) == 0 {
+		return
+	}
+	for i := range models {
+		if status, ok := evals[modelCheckKey(provider, models[i].ID)]; ok {
+			models[i].EvalStatus = status
 		}
 	}
 }

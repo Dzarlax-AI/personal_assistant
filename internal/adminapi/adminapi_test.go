@@ -288,6 +288,75 @@ func TestModelsBrowserRendersFreeCheckAction(t *testing.T) {
 	}
 }
 
+func TestModelsBrowserRendersEvalControlsAndStatus(t *testing.T) {
+	data := indexData{
+		Slots: []uiSlot{{Name: "default-or", ModelID: "x-ai/grok-4.3"}},
+		Models: []uiModel{{
+			ID:              "x-ai/grok-4.3",
+			PromptPrice:     1.25,
+			CompletionPrice: 2.50,
+			ContextLength:   1000000,
+			Tools:           true,
+			EvalStatus: modelEvalStatus{
+				CheckedAt:  "2026-06-16T10:00:00Z",
+				Passed:     4,
+				Failed:     1,
+				DurationMS: 1200,
+				Failures:   []string{"tool-web-fetch-intent: missing tool call"},
+			},
+		}},
+		CatalogProvider: "openrouter",
+	}
+	var buf bytes.Buffer
+	if err := render(&buf, viewModelsBrowser, data); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, "Run paid eval") || !strings.Contains(html, "Paid eval may spend credits") {
+		t.Fatalf("paid eval warning controls missing: %s", html)
+	}
+	if !strings.Contains(html, "eval:") || !strings.Contains(html, "failed") || !strings.Contains(html, "4/5 cases") {
+		t.Fatalf("eval status missing: %s", html)
+	}
+}
+
+func TestModelEvalRejectsPaidWithoutConfirmation(t *testing.T) {
+	s := newTestServer(t)
+	s.settings = &fakeSettingsStore{values: map[string]string{}}
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "x-ai/grok-4.3")
+	req := httptest.NewRequest(http.MethodPost, "/models/eval", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	s.handleModelEval(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "requires confirmation") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+	if _, ok := s.settings.(*fakeSettingsStore).values[settingKeyModelEvals]; ok {
+		t.Fatal("paid eval rejection should not write eval settings")
+	}
+}
+
+func TestModelEvalPaidGuard(t *testing.T) {
+	if isPaidModelEval("openrouter", "google/gemma-3-27b-it:free") {
+		t.Fatal("OpenRouter :free eval should not be treated as paid")
+	}
+	if !isPaidModelEval("openrouter", "x-ai/grok-4.3") {
+		t.Fatal("paid OpenRouter eval should require confirmation")
+	}
+	if !isPaidModelEval("gemini", "gemini-2.5-flash") {
+		t.Fatal("Gemini eval should require confirmation")
+	}
+	if isPaidModelEval("ollama", "qwen3:8b") {
+		t.Fatal("Ollama eval should be allowed without paid confirmation")
+	}
+}
+
 func TestWebModelCheckPersistsFreeModelStatus(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	settings := &fakeSettingsStore{values: map[string]string{}}
