@@ -366,6 +366,32 @@ func TestModelEvalRejectsPaidWithoutConfirmation(t *testing.T) {
 	}
 }
 
+func TestModelEvalHTMXShowsPaidConfirmationError(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	settings := &fakeSettingsStore{values: map[string]string{}}
+	s.settings = settings
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "qwen/qwen3.5-plus")
+	form.Set("view", "compact")
+	req := httptest.NewRequest(http.MethodPost, "/models/eval", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+
+	s.handleModelEval(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	html := rec.Body.String()
+	if !strings.Contains(html, "paid/cloud eval requires confirmation") || !strings.Contains(html, "eval:") {
+		t.Fatalf("htmx response should render visible eval error: %s", html)
+	}
+	if _, ok := settings.values[settingKeyModelEvals]; ok {
+		t.Fatal("confirmation validation error should not persist eval settings")
+	}
+}
+
 func TestModelEvalPaidGuard(t *testing.T) {
 	if isPaidModelEval("openrouter", "google/gemma-3-27b-it:free") {
 		t.Fatal("OpenRouter :free eval should not be treated as paid")

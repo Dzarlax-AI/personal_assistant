@@ -123,6 +123,48 @@ type indexData struct {
 	CatalogProvider string // "openrouter" | "gemini" — which catalog is shown in the models browser
 }
 
+func isHTMXRequest(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("HX-Request"), "true")
+}
+
+func (s *Server) renderModelOperationError(w http.ResponseWriter, r *http.Request, provider, modelID, kind, message string) {
+	if !isHTMXRequest(r) || modelID == "" {
+		http.Error(w, message, http.StatusBadRequest)
+		return
+	}
+	next := r.Clone(r.Context())
+	next.URL = cloneURL(r.URL)
+	next.URL.RawQuery = r.Form.Encode()
+	data := s.buildIndexData(next)
+	applyTransientModelOperationError(&data, provider, modelID, kind, message)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewModelsContent, data); err != nil {
+		s.logger.Error("render models after operation error", "err", err)
+	}
+}
+
+func applyTransientModelOperationError(data *indexData, provider, modelID, kind, message string) {
+	apply := func(models []uiModel) {
+		for i := range models {
+			if models[i].ID != modelID {
+				continue
+			}
+			switch kind {
+			case "check":
+				models[i].CheckStatus = "error"
+				models[i].CheckError = message
+				models[i].Warnings = append(models[i].Warnings, message)
+			case "eval":
+				models[i].EvalStatus = failedModelEval(provider, modelID, message)
+			}
+		}
+	}
+	apply(data.Models)
+	for i := range data.ModelSections {
+		apply(data.ModelSections[i].Models)
+	}
+}
+
 // --- Handlers ---
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -191,11 +233,11 @@ func (s *Server) handleModelCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if provider != "openrouter" || !isFreeVariant(modelID) {
-		http.Error(w, "only free OpenRouter models can be checked here", http.StatusBadRequest)
+		s.renderModelOperationError(w, r, provider, modelID, "check", "only free OpenRouter models can be checked here")
 		return
 	}
 	if !s.modelEvalMu.TryLock() {
-		http.Error(w, "another model operation is already running", http.StatusTooManyRequests)
+		s.renderModelOperationError(w, r, provider, modelID, "check", "another model operation is already running")
 		return
 	}
 	defer s.modelEvalMu.Unlock()

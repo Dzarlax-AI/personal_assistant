@@ -60,12 +60,12 @@ func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
 	}
 	paid := isPaidModelEval(provider, modelID)
 	if paid && r.FormValue("confirm_paid_eval") != "1" {
-		http.Error(w, "paid/cloud eval requires confirmation", http.StatusBadRequest)
+		s.renderModelOperationError(w, r, provider, modelID, "eval", "paid/cloud eval requires confirmation")
 		return
 	}
 
 	if !s.modelEvalMu.TryLock() {
-		http.Error(w, "another model operation is already running", http.StatusTooManyRequests)
+		s.renderModelOperationError(w, r, provider, modelID, "eval", "another model operation is already running")
 		return
 	}
 	defer s.modelEvalMu.Unlock()
