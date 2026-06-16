@@ -40,5 +40,6 @@ COPY --from=builder /app/bin/agent .
 # live in kv_settings, and this file supplies the bootstrap defaults. For dev
 # you can still mount over it via volumes.
 COPY --from=builder /app/config/config.yaml ./config/config.yaml
+COPY --from=builder /app/evals ./evals
 
 ENTRYPOINT ["./agent"]
