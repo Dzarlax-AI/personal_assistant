@@ -128,7 +128,7 @@
     <div class="model-actions__check">
       <button class="btn btn--small {{if eq .Policy "free_verified"}}btn--ghost{{else}}btn--primary{{end}}"
               hx-post="/models/check"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__check"
@@ -149,7 +149,7 @@
       <input type="hidden" name="confirm_paid_eval" value="1">
       <button class="btn btn--small btn--ghost"
               hx-post="/models/eval"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__eval"
@@ -164,7 +164,7 @@
       </label>
       <button class="btn btn--small btn--ghost"
               hx-post="/models/eval"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-target="#models-content"
               hx-swap="outerHTML"
               hx-indicator="closest .model-actions__eval"
@@ -178,20 +178,20 @@
       <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note">
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-vals='{"state":"allow"}'
               hx-target="#models-content"
               hx-swap="outerHTML">Allow</button>
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-vals='{"state":"deny"}'
               hx-target="#models-content"
               hx-swap="outerHTML">Deny</button>
       {{if or (eq .Policy "manual_allow") (eq .Policy "manual_deny")}}
       <button class="btn btn--small btn--ghost"
               hx-post="/models/override"
-              hx-include="#models-filters, closest [data-model-card]"
+              hx-include="#models-filters, closest .model-actions"
               hx-vals='{"state":""}'
               hx-target="#models-content"
               hx-swap="outerHTML">Clear</button>
@@ -206,7 +206,7 @@
       {{else}}
       <button class="btn btn--small {{if eq .ModelID $modelID}}btn--primary{{else}}btn--ghost{{end}}"
               hx-post="/slots/{{.Name}}/assign"
-              hx-include="closest [data-model-card]"
+              hx-include="closest .model-actions"
               hx-target="#routing-section"
               hx-swap="innerHTML">
         {{if eq .ModelID $modelID}}✓ {{end}}→ {{.Name}}
