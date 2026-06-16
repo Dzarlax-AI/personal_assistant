@@ -140,13 +140,21 @@
           <div class="ops-pre">{{.SuiteErr}}</div>
         {{else}}
           <div class="ops-summary">
-            <span class="ops-badge">{{.Suite.Name}}</span>
-            <span class="ops-badge">version {{.Suite.Version}}</span>
-            <span class="ops-badge">{{len .Suite.Cases}} cases</span>
-          </div>
+          <span class="ops-badge">{{.Suite.Name}}</span>
+          <span class="ops-badge">version {{.Suite.Version}}</span>
+          <span class="ops-badge">{{len .Suite.Cases}} cases</span>
+          <span class="ops-badge">manual only</span>
+        </div>
           {{range .Suite.Cases}}
           <details class="ops-detail">
             <summary><span class="model-id">{{.ID}}</span> · {{.Category}}</summary>
+            {{if .Purpose}}<div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">purpose</div><div class="ops-pre">{{.Purpose}}</div>{{end}}
+            {{if .Limitations}}
+            <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">limitations</div>
+            <ul>
+              {{range .Limitations}}<li>{{.}}</li>{{end}}
+            </ul>
+            {{end}}
             {{if .SystemPrompt}}<div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">system prompt</div><div class="ops-pre">{{.SystemPrompt}}</div>{{end}}
             <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">prompt</div>
             <div class="ops-pre">{{.Prompt}}</div>
@@ -159,9 +167,13 @@
             <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">expectations</div>
             <ul>
               {{range .Expect.MustContain}}<li>must contain <code>{{.}}</code></li>{{end}}
+              {{range .Expect.MustContainAny}}<li>must contain one of {{range .}}<code>{{.}}</code> {{end}}</li>{{end}}
               {{range .Expect.MustNotContain}}<li>must not contain <code>{{.}}</code></li>{{end}}
               {{if .Expect.ToolCall}}<li>tool call <code>{{.Expect.ToolCall}}</code></li>{{end}}
+              {{if .Expect.ToolArgs}}<li>tool args {{range $key, $value := .Expect.ToolArgs}}<code>{{$key}}={{$value}}</code> {{end}}</li>{{end}}
               {{if .Expect.NoToolCall}}<li>no tool call</li>{{end}}
+              {{if .Expect.MaxToolCalls}}<li>max tool calls <code>{{.Expect.MaxToolCalls}}</code></li>{{end}}
+              {{if .Expect.MaxChars}}<li>max chars <code>{{.Expect.MaxChars}}</code></li>{{end}}
             </ul>
           </details>
           {{end}}
