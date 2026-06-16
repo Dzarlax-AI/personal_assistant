@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "name": "personal-assistant-core-workloads",
+  "cases": [
+    {
+      "id": "ru-chat-concise",
+      "category": "russian_chat",
+      "system_prompt": "Reply in Russian. Be concise and practical.",
+      "prompt": "Пользователь спрашивает: \"Что лучше сделать сначала: проверить логи сервиса или сразу перезапустить контейнер?\" Ответь коротко, как инженер.",
+      "expect": {
+        "must_contain": ["логи"],
+        "must_not_contain": ["As an AI"],
+        "no_tool_call": true
+      }
+    },
+    {
+      "id": "tool-calendar-intent",
+      "category": "tool_use",
+      "system_prompt": "Use tools when the user asks for data that only a tool can know.",
+      "prompt": "Проверь мой календарь на завтра утром и скажи, есть ли свободное окно на 30 минут.",
+      "tools": [
+        {
+          "name": "calendar_list_events",
+          "description": "List calendar events for a date range.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "date_from": {"type": "string"},
+              "date_to": {"type": "string"}
+            },
+            "required": ["date_from", "date_to"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "calendar_list_events"
+      }
+    },
+    {
+      "id": "tool-web-fetch-intent",
+      "category": "web_fetch",
+      "system_prompt": "Use tools when the user asks you to inspect a URL. Do not invent page contents.",
+      "prompt": "Открой https://example.com/release-notes и кратко перечисли изменения в последнем релизе.",
+      "tools": [
+        {
+          "name": "web_fetch",
+          "description": "Fetch a URL and return readable page text.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "url": {"type": "string"}
+            },
+            "required": ["url"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "web_fetch"
+      }
+    },
+    {
+      "id": "compaction-summary",
+      "category": "compaction",
+      "system_prompt": "Summarize the conversation state for future turns. Preserve decisions, unresolved tasks, and concrete identifiers.",
+      "prompt": "Сожми историю: решили вынести ARM docker build в manual workflow; сделали compact model catalog; free модели проверяем перед назначением; остался watchlist и eval pack. Нужно продолжить без потери контекста.",
+      "expect": {
+        "must_contain": ["ARM", "watchlist", "eval"],
+        "no_tool_call": true
+      }
+    },
+    {
+      "id": "admin-debug-next-step",
+      "category": "admin_debug",
+      "system_prompt": "Act as a pragmatic senior engineer. Give the next diagnostic step first.",
+      "prompt": "После деплоя админка открывается, но список моделей пустой. Что проверишь первым?",
+      "expect": {
+        "must_contain": ["capabilities"],
+        "must_not_contain": ["перезапусти все"],
+        "no_tool_call": true
+      }
+    }
+  ]
+}
