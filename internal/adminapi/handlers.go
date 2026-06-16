@@ -144,6 +144,17 @@ func (s *Server) handleAnalytics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleEvals(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	data := s.buildModelOpsData(ctx)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := render(w, viewEvals, data); err != nil {
+		s.logger.Error("render evals", "err", err)
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	data := s.buildIndexData(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -181,6 +192,15 @@ func (s *Server) handleModelCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	if provider != "openrouter" || !isFreeVariant(modelID) {
 		http.Error(w, "only free OpenRouter models can be checked here", http.StatusBadRequest)
+		return
+	}
+	if !s.modelEvalMu.TryLock() {
+		http.Error(w, "another model operation is already running", http.StatusTooManyRequests)
+		return
+	}
+	defer s.modelEvalMu.Unlock()
+	if err := s.saveModelCheck(r.Context(), provider, modelID, checkingModelCheck(provider, modelID)); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -842,7 +862,7 @@ func attachModelChecks(models []uiModel, provider string, checks map[string]mode
 		models[i].CheckedAt = check.CheckedAt
 		models[i].CheckLatencyMS = check.LatencyMS
 		models[i].CheckError = check.Error
-		if check.Status != "free_unverified" {
+		if check.Status != "free_unverified" && check.Status != "checking" {
 			models[i].Policy = check.Status
 			models[i].Warnings = withoutWarning(models[i].Warnings, "free model: validate availability before routing")
 		}

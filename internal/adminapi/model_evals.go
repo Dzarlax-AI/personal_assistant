@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,12 +20,20 @@ const (
 )
 
 type modelEvalStatus struct {
-	CheckedAt  string   `json:"checked_at,omitempty"`
-	Passed     int      `json:"passed"`
-	Failed     int      `json:"failed"`
-	DurationMS int64    `json:"duration_ms"`
-	Error      string   `json:"error,omitempty"`
-	Failures   []string `json:"failures,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	Provider   string            `json:"provider,omitempty"`
+	ModelID    string            `json:"model_id,omitempty"`
+	Suite      string            `json:"suite,omitempty"`
+	StartedAt  string            `json:"started_at,omitempty"`
+	FinishedAt string            `json:"finished_at,omitempty"`
+	UpdatedAt  string            `json:"updated_at,omitempty"`
+	CheckedAt  string            `json:"checked_at,omitempty"`
+	Passed     int               `json:"passed"`
+	Failed     int               `json:"failed"`
+	DurationMS int64             `json:"duration_ms"`
+	Error      string            `json:"error,omitempty"`
+	Failures   []string          `json:"failures,omitempty"`
+	Results    []evalpack.Result `json:"results,omitempty"`
 }
 
 func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
@@ -56,10 +65,14 @@ func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.modelEvalMu.TryLock() {
-		http.Error(w, "another model eval is already running", http.StatusTooManyRequests)
+		http.Error(w, "another model operation is already running", http.StatusTooManyRequests)
 		return
 	}
 	defer s.modelEvalMu.Unlock()
+	if err := s.saveModelEval(r.Context(), provider, modelID, runningModelEval(provider, modelID)); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	caps := s.lookupCapsFor(r.Context(), provider, modelID)
 	ctx, cancel := context.WithTimeout(r.Context(), modelEvalTimeout)
@@ -94,27 +107,40 @@ func isPaidModelEval(provider, modelID string) bool {
 
 func (s *Server) runModelEval(ctx context.Context, providerType, modelID string, caps llm.Capabilities) modelEvalStatus {
 	if s.cfgRef == nil {
-		return failedModelEval("missing runtime config")
+		return failedModelEval(providerType, modelID, "missing runtime config")
 	}
 	suite, err := evalpack.LoadSuite(modelEvalDatasetPath)
 	if err != nil {
-		return failedModelEval(err.Error())
+		return failedModelEval(providerType, modelID, err.Error())
 	}
 	factories := llm.BuildBackendFactories(s.cfgRef)
 	factory := factories[providerType]
 	if factory == nil {
-		return failedModelEval("provider is not eval-capable from current config")
+		return failedModelEval(providerType, modelID, "provider is not eval-capable from current config")
 	}
 	provider, err := factory(modelID, caps)
 	if err != nil {
-		return failedModelEval(err.Error())
+		return failedModelEval(providerType, modelID, err.Error())
 	}
 	report := evalpack.RunSuite(ctx, provider, suite, evalpack.Options{Timeout: 12 * time.Second})
+	now := time.Now().Format(time.RFC3339)
+	statusText := "passed"
+	if report.Failed > 0 {
+		statusText = "failed"
+	}
 	status := modelEvalStatus{
-		CheckedAt:  time.Now().Format(time.RFC3339),
+		Status:     statusText,
+		Provider:   providerType,
+		ModelID:    modelID,
+		Suite:      report.Suite,
+		StartedAt:  report.StartedAt.Format(time.RFC3339),
+		FinishedAt: now,
+		UpdatedAt:  now,
+		CheckedAt:  now,
 		Passed:     report.Passed,
 		Failed:     report.Failed,
 		DurationMS: report.DurationMS,
+		Results:    report.Results,
 	}
 	for _, result := range report.Results {
 		if result.Passed {
@@ -136,12 +162,30 @@ func (s *Server) runModelEval(ctx context.Context, providerType, modelID string,
 	return status
 }
 
-func failedModelEval(message string) modelEvalStatus {
+func runningModelEval(provider, modelID string) modelEvalStatus {
+	now := time.Now().Format(time.RFC3339)
 	return modelEvalStatus{
-		CheckedAt: time.Now().Format(time.RFC3339),
-		Failed:    1,
-		Error:     message,
-		Failures:  []string{message},
+		Status:    "running",
+		Provider:  provider,
+		ModelID:   modelID,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func failedModelEval(provider, modelID, message string) modelEvalStatus {
+	now := time.Now().Format(time.RFC3339)
+	return modelEvalStatus{
+		Status:     "error",
+		Provider:   provider,
+		ModelID:    modelID,
+		StartedAt:  now,
+		FinishedAt: now,
+		UpdatedAt:  now,
+		CheckedAt:  now,
+		Failed:     1,
+		Error:      message,
+		Failures:   []string{message},
 	}
 }
 
@@ -158,6 +202,7 @@ func (s *Server) loadModelEvals(ctx context.Context) map[string]modelEvalStatus 
 		s.logger.Warn("model eval cache parse failed", "err", err)
 		return nil
 	}
+	normalizeModelEvals(out)
 	return out
 }
 
@@ -169,10 +214,91 @@ func (s *Server) saveModelEval(ctx context.Context, provider, modelID string, st
 	if evals == nil {
 		evals = map[string]modelEvalStatus{}
 	}
-	evals[modelCheckKey(provider, modelID)] = status
+	evals[modelCheckKey(provider, modelID)] = normalizeSingleModelEval(provider, modelID, status)
 	data, err := json.Marshal(evals)
 	if err != nil {
 		return err
 	}
 	return s.settings.PutSetting(ctx, settingKeyModelEvals, string(data))
+}
+
+func normalizeModelEvals(evals map[string]modelEvalStatus) {
+	for key, status := range evals {
+		provider, modelID, _ := strings.Cut(key, "|")
+		evals[key] = normalizeSingleModelEval(provider, modelID, status)
+	}
+}
+
+func normalizeSingleModelEval(provider, modelID string, status modelEvalStatus) modelEvalStatus {
+	if status.Provider == "" {
+		status.Provider = provider
+	}
+	if status.ModelID == "" {
+		status.ModelID = modelID
+	}
+	if status.Status == "" {
+		switch {
+		case status.CheckedAt == "":
+			status.Status = "unknown"
+		case status.Error != "":
+			status.Status = "error"
+		case status.Failed > 0:
+			status.Status = "failed"
+		default:
+			status.Status = "passed"
+		}
+	}
+	if status.UpdatedAt == "" {
+		if status.FinishedAt != "" {
+			status.UpdatedAt = status.FinishedAt
+		} else {
+			status.UpdatedAt = status.CheckedAt
+		}
+	}
+	if status.CheckedAt == "" && status.FinishedAt != "" {
+		status.CheckedAt = status.FinishedAt
+	}
+	return status
+}
+
+type modelOpsData struct {
+	ActiveTab string
+	Checks    []modelCheckStatus
+	Evals     []modelEvalStatus
+	Suite     evalpack.Suite
+	SuiteErr  string
+}
+
+func (s *Server) buildModelOpsData(ctx context.Context) modelOpsData {
+	data := modelOpsData{ActiveTab: "evals"}
+	for _, check := range s.loadModelChecks(ctx) {
+		data.Checks = append(data.Checks, check)
+	}
+	sort.Slice(data.Checks, func(i, j int) bool {
+		return modelOpSortTime(data.Checks[i].UpdatedAt, data.Checks[i].CheckedAt, data.Checks[i].StartedAt).After(
+			modelOpSortTime(data.Checks[j].UpdatedAt, data.Checks[j].CheckedAt, data.Checks[j].StartedAt))
+	})
+	for _, eval := range s.loadModelEvals(ctx) {
+		data.Evals = append(data.Evals, eval)
+	}
+	sort.Slice(data.Evals, func(i, j int) bool {
+		return modelOpSortTime(data.Evals[i].UpdatedAt, data.Evals[i].CheckedAt, data.Evals[i].StartedAt).After(
+			modelOpSortTime(data.Evals[j].UpdatedAt, data.Evals[j].CheckedAt, data.Evals[j].StartedAt))
+	})
+	suite, err := evalpack.LoadSuite(modelEvalDatasetPath)
+	if err != nil {
+		data.SuiteErr = err.Error()
+	} else {
+		data.Suite = suite
+	}
+	return data
+}
+
+func modelOpSortTime(values ...string) time.Time {
+	for _, v := range values {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
