@@ -47,6 +47,8 @@ func modelStatusLabel(m uiModel, current bool) string {
 		return "Recommended"
 	case m.Section == "untested" || m.Source == "untested" || m.Policy == "free_unverified":
 		return "Untested"
+	case m.Section == "watchlist" || m.Source == "watchlist":
+		return "Needs review"
 	case m.Section == "interesting" || m.Source == "near_frontier" || m.Source == "manual" || m.Policy == "manual_allow":
 		return "Interesting"
 	}
@@ -99,6 +101,8 @@ func modelPrimaryReason(m uiModel, role, status string) string {
 			return "Near frontier for " + role
 		}
 		return "Near recommendation frontier"
+	case m.Source == "watchlist":
+		return "Outside proven model family allowlist"
 	case status == "Untested":
 		return "Compatible but missing role evidence"
 	}

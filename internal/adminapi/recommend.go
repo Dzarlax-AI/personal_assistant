@@ -432,6 +432,113 @@ func appendUntestedAlternatives(models, candidates []uiModel, axes paretoAxes, r
 	return append(models, untested...)
 }
 
+func appendWatchlistCandidates(models []uiModel, all map[string]llm.Capabilities, aaModels map[string]llm.AAModelInfo, role string, visionFallbackPrompt float64, limit int) []uiModel {
+	if limit <= 0 {
+		return models
+	}
+	seen := make(map[string]bool, len(models))
+	for _, m := range models {
+		seen[m.ID] = true
+	}
+	candidates := make([]uiModel, 0, limit)
+	for id, c := range all {
+		if seen[id] || !watchlistEligible(c, id, role) {
+			continue
+		}
+		m := uiModel{
+			ID:              id,
+			Name:            c.Name,
+			Description:     c.Description,
+			PromptPrice:     c.PromptPrice,
+			CompletionPrice: c.CompletionPrice,
+			ContextLength:   c.ContextLength,
+			Vision:          c.Vision,
+			Tools:           c.Tools,
+			Reasoning:       c.Reasoning,
+			Free:            c.Free(),
+			Score:           c.Score,
+			Section:         "watchlist",
+		}
+		if aaModels != nil {
+			if info := llm.LookupAAInfo(id, aaModels); info != nil {
+				enrichFromAA(&m, *info)
+			}
+		}
+		if usesVisionFallback(role) && visionFallbackPrompt > 0 && !c.Vision {
+			m.EffectivePrompt = (1-imageShare)*c.PromptPrice + imageShare*visionFallbackPrompt
+		}
+		axes := watchlistAxes(role)
+		if axes != nil {
+			if q, p := axes(m); q > 0 && p > 0 {
+				m.ValuePerDollar = q / p
+			}
+		}
+		annotateModelForRole(&m, role, "watchlist")
+		m.Reasons = uniqueStrings(append(m.Reasons, "watchlist candidate", "outside multilingual allowlist"))
+		candidates = append(candidates, m)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		axes := watchlistAxes(role)
+		if axes != nil {
+			qi, pi := axes(candidates[i])
+			qj, pj := axes(candidates[j])
+			if qi != qj {
+				return qi > qj
+			}
+			if pi != pj {
+				return pi < pj
+			}
+		}
+		if candidates[i].ContextLength != candidates[j].ContextLength {
+			return candidates[i].ContextLength > candidates[j].ContextLength
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return append(models, candidates...)
+}
+
+func watchlistEligible(c llm.Capabilities, id, role string) bool {
+	if c.Free() || multilingualRegex.MatchString(id) || excludedVendorsRegex.MatchString(id) || isUnstableVariant(id) {
+		return false
+	}
+	if specialisedCoderRegex.MatchString(id) {
+		return false
+	}
+	if role != "multimodal" && specialisedVisionRegex.MatchString(id) {
+		return false
+	}
+	switch role {
+	case "simple":
+		return c.Tools && c.ContextLength >= 32000 && c.PromptPrice > 0 && c.PromptPrice <= 0.5
+	case "default":
+		return c.Tools && !lightweightDefaultRegex.MatchString(id) && c.ContextLength >= 32000 && c.PromptPrice > 0 && c.PromptPrice <= 4.0
+	case "complex":
+		return c.Tools && c.Reasoning && c.ContextLength >= 64000 && c.PromptPrice > 0 && c.PromptPrice <= 10.0
+	case "multimodal":
+		return c.Tools && c.Vision && c.ContextLength >= 32000 && c.PromptPrice > 0 && c.PromptPrice <= 4.0
+	case "compaction":
+		return c.ContextLength >= 64000 && c.CompletionPrice > 0 && c.CompletionPrice <= 4.0
+	case "classifier":
+		return c.ContextLength >= 16000 && c.PromptPrice > 0 && c.PromptPrice <= 0.25
+	default:
+		return false
+	}
+}
+
+func watchlistAxes(role string) paretoAxes {
+	switch role {
+	case "compaction":
+		return func(m uiModel) (float64, float64) { return roleQuality(m, role), m.CompletionPrice }
+	case "classifier", "simple", "default", "complex", "multimodal":
+		return func(m uiModel) (float64, float64) { return roleQuality(m, role), effectiveBlendedPriceOf(m) }
+	default:
+		return nil
+	}
+}
+
 // applyPreset returns the Pareto-optimal models for the role, sorted by
 // quality descending (best first). If the role has no preset, returns nil.
 // Each returned model has ValuePerDollar populated using the role's axes.
@@ -501,7 +608,8 @@ func applyPreset(all map[string]llm.Capabilities, aaModels map[string]llm.AAMode
 		frontier[i].Section = "recommended"
 		annotateModelForRole(&frontier[i], role, "preset")
 	}
-	return appendNearFrontierAlternatives(frontier, candidates, axes, role, 4)
+	out := appendNearFrontierAlternatives(frontier, candidates, axes, role, 4)
+	return appendWatchlistCandidates(out, all, aaModels, role, visionFallbackPrompt, 4)
 }
 
 func annotateModelForRole(m *uiModel, role, source string) {

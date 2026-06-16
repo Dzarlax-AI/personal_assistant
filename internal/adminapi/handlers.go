@@ -703,6 +703,7 @@ func buildModelSections(models []uiModel, presetMode bool) []uiModelSection {
 	order := []uiModelSection{
 		{Key: "recommended", Title: "Recommended", Description: "Stable, role-fit models backed by benchmark data."},
 		{Key: "interesting", Title: "Interesting", Description: "Plausible alternatives and non-obvious trade-offs worth reviewing."},
+		{Key: "watchlist", Title: "Needs review", Description: "Capability-compatible models outside the proven family allowlist. Inspect or test before allowing."},
 		{Key: "untested", Title: "Untested", Description: "Capability-compatible models with missing quality data or local evidence."},
 		{Key: "blocked", Title: "Blocked", Description: "Filtered or manually denied models, shown only when present."},
 	}
@@ -732,6 +733,8 @@ func modelSectionKey(m uiModel) string {
 		return "recommended"
 	case m.Source == "untested" || m.Policy == "free_unverified":
 		return "untested"
+	case m.Source == "watchlist" || m.Section == "watchlist":
+		return "watchlist"
 	case m.Source == "near_frontier" || m.Source == "manual" || m.Policy == "manual_allow":
 		return "interesting"
 	default:

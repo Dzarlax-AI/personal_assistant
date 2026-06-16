@@ -108,6 +108,74 @@ func TestPresetKeepsUntestedCandidatesBelowRecommendations(t *testing.T) {
 	}
 }
 
+func TestDefaultPresetAddsWatchlistForUnknownModelFamilies(t *testing.T) {
+	caps := map[string]llm.Capabilities{
+		"deepseek/deepseek-v3.2": {
+			Tools:           true,
+			PromptPrice:     0.25,
+			CompletionPrice: 1.00,
+			ContextLength:   128000,
+			Score:           40,
+		},
+		"minimax/minimax-m2.5": {
+			Tools:           true,
+			PromptPrice:     0.20,
+			CompletionPrice: 1.10,
+			ContextLength:   196000,
+			Score:           42,
+		},
+	}
+
+	got := applyPreset(caps, nil, "default", 0)
+	if !containsModel(got, "minimax/minimax-m2.5") {
+		t.Fatalf("unknown family should be visible as watchlist candidate: %+v", got)
+	}
+	for _, model := range got {
+		if model.ID != "minimax/minimax-m2.5" {
+			continue
+		}
+		if model.Recommended || model.Source != "watchlist" || model.Section != "watchlist" || model.Policy != "candidate" {
+			t.Fatalf("unknown family should be watchlist-only, got: %+v", model)
+		}
+		if !containsString(model.Reasons, "outside multilingual allowlist") {
+			t.Fatalf("watchlist reason missing: %+v", model.Reasons)
+		}
+		return
+	}
+}
+
+func TestWatchlistDoesNotIncludeFreeOrUnstableModels(t *testing.T) {
+	caps := map[string]llm.Capabilities{
+		"deepseek/deepseek-v3.2": {
+			Tools:           true,
+			PromptPrice:     0.25,
+			CompletionPrice: 1.00,
+			ContextLength:   128000,
+			Score:           40,
+		},
+		"minimax/minimax-m2.5:free": {
+			Tools:         true,
+			ContextLength: 196000,
+			Score:         42,
+		},
+		"minimax/minimax-m2.5-preview": {
+			Tools:           true,
+			PromptPrice:     0.20,
+			CompletionPrice: 1.10,
+			ContextLength:   196000,
+			Score:           42,
+		},
+	}
+
+	got := applyPreset(caps, nil, "default", 0)
+	if containsModel(got, "minimax/minimax-m2.5:free") {
+		t.Fatalf("free variants should not enter watchlist by default: %+v", got)
+	}
+	if containsModel(got, "minimax/minimax-m2.5-preview") {
+		t.Fatalf("unstable variants should not enter watchlist: %+v", got)
+	}
+}
+
 func TestPresetUsesAAScoreWhenCapabilityScoreIsEmpty(t *testing.T) {
 	caps := map[string]llm.Capabilities{
 		"x-ai/grok-4.3": {
@@ -208,12 +276,13 @@ func TestModelSectionsSplitRecommendationBuckets(t *testing.T) {
 	models := []uiModel{
 		{ID: "deepseek/deepseek-v3.2", Recommended: true, Section: "recommended", Policy: "recommended"},
 		{ID: "x-ai/grok-4.3", Source: "near_frontier", Section: "interesting", Policy: "candidate"},
+		{ID: "minimax/minimax-m2.5", Source: "watchlist", Section: "watchlist", Policy: "candidate"},
 		{ID: "qwen/qwen-plus", Source: "untested", Section: "untested", Policy: "candidate"},
 	}
 
 	sections := buildModelSections(models, true)
-	if len(sections) != 3 {
-		t.Fatalf("sections len = %d, want 3: %+v", len(sections), sections)
+	if len(sections) != 4 {
+		t.Fatalf("sections len = %d, want 4: %+v", len(sections), sections)
 	}
 	if sections[0].Key != "recommended" || sections[0].Models[0].ID != "deepseek/deepseek-v3.2" {
 		t.Fatalf("unexpected recommended section: %+v", sections)
@@ -221,7 +290,10 @@ func TestModelSectionsSplitRecommendationBuckets(t *testing.T) {
 	if sections[1].Key != "interesting" || sections[1].Models[0].ID != "x-ai/grok-4.3" {
 		t.Fatalf("unexpected interesting section: %+v", sections)
 	}
-	if sections[2].Key != "untested" || sections[2].Models[0].ID != "qwen/qwen-plus" {
+	if sections[2].Key != "watchlist" || sections[2].Models[0].ID != "minimax/minimax-m2.5" {
+		t.Fatalf("unexpected watchlist section: %+v", sections)
+	}
+	if sections[3].Key != "untested" || sections[3].Models[0].ID != "qwen/qwen-plus" {
 		t.Fatalf("unexpected untested section: %+v", sections)
 	}
 }
