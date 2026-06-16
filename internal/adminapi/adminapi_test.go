@@ -304,8 +304,11 @@ func TestModelsBrowserRendersFreeCheckAction(t *testing.T) {
 	if !strings.Contains(html, `hx-post="/models/check"`) || !strings.Contains(html, "Check free") {
 		t.Fatalf("free check action missing: %s", html)
 	}
-	if !strings.Contains(html, `hx-include="#models-filters, closest .model-actions"`) {
+	if !strings.Contains(html, `hx-include="closest .model-actions"`) {
 		t.Fatalf("model actions should include local hidden inputs: %s", html)
+	}
+	if !strings.Contains(html, `name="model_id" value="qwen/qwen3.5-flash:free"`) || !strings.Contains(html, `name="provider" value="openrouter"`) {
+		t.Fatalf("model action hidden fields missing: %s", html)
 	}
 	if !strings.Contains(html, "Free model must pass check before routing") {
 		t.Fatalf("unverified free model should not render active assign buttons: %s", html)
