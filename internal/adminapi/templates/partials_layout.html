@@ -4,6 +4,25 @@
 <link rel="stylesheet" href="/static/dzarlax.css">
 <script src="/static/dzarlax.js" defer></script>
 <script src="/static/htmx.min.js" defer></script>
+<script>
+  document.addEventListener("htmx:beforeSwap", function (event) {
+    var detail = event.detail || {};
+    var xhr = detail.xhr;
+    if (!xhr || xhr.status < 400) return;
+    detail.shouldSwap = false;
+    detail.isError = false;
+    var source = detail.requestConfig && detail.requestConfig.elt ? detail.requestConfig.elt : event.target;
+    var host = source && source.closest ? source.closest("[data-model-card], .card__body, section") : null;
+    if (!host) host = document.body;
+    var old = host.querySelector(":scope > .admin-inline-error");
+    if (old) old.remove();
+    var box = document.createElement("div");
+    box.className = "admin-inline-error";
+    box.setAttribute("role", "alert");
+    box.textContent = (xhr.responseText || ("Request failed with HTTP " + xhr.status)).trim();
+    host.prepend(box);
+  });
+</script>
 <style>
   /* Admin UI overrides on top of the dzarlax design system. Anything that
      duplicates DS is deliberately absent — we rely on DS components for:
@@ -41,6 +60,7 @@
   .model-op-status.running { color: var(--accent, #2563eb); }
   .model-actions__check.htmx-request button, .model-actions__eval.htmx-request button { pointer-events: none; opacity: 0.7; }
   .model-actions__check .htmx-indicator, .model-actions__eval .htmx-indicator { margin-left: 0.35rem; }
+  .admin-inline-error { margin-top: 0.5rem; padding: 0.45rem 0.6rem; border-radius: 6px; background: rgba(154,91,0,0.10); color: var(--warning, #9a5b00); font-size: 0.82rem; }
   .model-actions__override { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
   .model-actions__override .form-input { width: 12rem; min-width: 9rem; font-size: 0.8rem; }
   .catalog-list-section { margin-bottom: 1rem; }
