@@ -1,0 +1,173 @@
+{{define "evals"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Evals · Personal Assistant</title>
+  {{template "admin_head" .}}
+</head>
+<body>
+  {{template "admin_header" .}}
+
+  <section class="admin-section">
+    <div class="card">
+      <div class="card__header" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <div>
+          <strong>Model Operations</strong>
+          <div style="color:var(--text-secondary);font-size:0.85rem;">Manual free checks and workload evals with visible running state.</div>
+        </div>
+        <a class="btn btn--small btn--ghost" href="/evals">Refresh</a>
+      </div>
+      <div class="card__body">
+        <div class="ops-summary">
+          <span class="ops-badge">checks: {{len .Checks}}</span>
+          <span class="ops-badge">evals: {{len .Evals}}</span>
+          {{range .Checks}}{{if eq .Status "checking"}}<span class="ops-badge running">checking {{.ModelID}}</span>{{end}}{{end}}
+          {{range .Evals}}{{if eq .Status "running"}}<span class="ops-badge running">running {{.ModelID}}</span>{{end}}{{end}}
+        </div>
+
+        <h2 class="usage-section-h">Free model checks</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Checked</th>
+                <th>Latency</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Checks}}
+              <tr>
+                <td><div class="model-id">{{.ModelID}}</div><div style="color:var(--text-secondary);font-size:0.78rem;">{{.Provider}}</div></td>
+                <td>
+                  <span class="ops-badge {{if eq .Status "free_verified"}}ok{{else if eq .Status "checking"}}running{{else}}warn{{end}}">{{.Status}}</span>
+                </td>
+                <td>{{if .StartedAt}}{{.StartedAt}}{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+                <td>{{if .CheckedAt}}{{.CheckedAt}}{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+                <td>{{if .LatencyMS}}{{.LatencyMS}} ms{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+                <td>{{if .Error}}<div class="ops-pre">{{.Error}}</div>{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+              </tr>
+              {{else}}
+              <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:1.5rem;">No model checks yet.</td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-section">
+    <div class="card">
+      <div class="card__header">
+        <strong>Eval Reports</strong>
+      </div>
+      <div class="card__body">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Status</th>
+                <th>Started</th>
+                <th>Finished</th>
+                <th>Result</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {{range .Evals}}
+              <tr>
+                <td>
+                  <div class="model-id">{{.ModelID}}</div>
+                  <div style="color:var(--text-secondary);font-size:0.78rem;">{{.Provider}}{{if .Suite}} · {{.Suite}}{{end}}</div>
+                </td>
+                <td><span class="ops-badge {{if eq .Status "passed"}}ok{{else if eq .Status "running"}}running{{else}}warn{{end}}">{{.Status}}</span></td>
+                <td>{{if .StartedAt}}{{.StartedAt}}{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+                <td>{{if .FinishedAt}}{{.FinishedAt}}{{else if .CheckedAt}}{{.CheckedAt}}{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}</td>
+                <td>
+                  {{if or .Passed .Failed}}{{.Passed}}/{{add .Passed .Failed}} cases{{else}}<span style="color:var(--text-secondary)">-</span>{{end}}
+                  {{if .DurationMS}} · {{.DurationMS}} ms{{end}}
+                  {{if .Error}}<div class="ops-pre">{{.Error}}</div>{{end}}
+                  {{if .Failures}}
+                  <ul style="margin:0.35rem 0 0;padding-left:1.1rem;">
+                    {{range .Failures}}<li>{{.}}</li>{{end}}
+                  </ul>
+                  {{end}}
+                </td>
+                <td>
+                  {{if .Results}}
+                  <details class="ops-detail">
+                    <summary>{{len .Results}} cases</summary>
+                    {{range .Results}}
+                    <details class="ops-detail">
+                      <summary>{{.ID}} · {{.Category}} · {{if .Passed}}passed{{else}}failed{{end}} · {{.LatencyMS}} ms</summary>
+                      {{if .ToolCalls}}<div style="color:var(--text-secondary);font-size:0.82rem;">tool calls: {{range .ToolCalls}}<code>{{.}}</code> {{end}}</div>{{end}}
+                      {{if .Failures}}
+                      <ul>
+                        {{range .Failures}}<li>{{.}}</li>{{end}}
+                      </ul>
+                      {{end}}
+                      {{if .Error}}<div class="ops-pre">{{.Error}}</div>{{end}}
+                      {{if .ContentPreview}}<div class="ops-pre">{{.ContentPreview}}</div>{{end}}
+                    </details>
+                    {{end}}
+                  </details>
+                  {{else}}
+                  <span style="color:var(--text-secondary)">No detailed report stored.</span>
+                  {{end}}
+                </td>
+              </tr>
+              {{else}}
+              <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:1.5rem;">No eval reports yet.</td></tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="admin-section">
+    <div class="card">
+      <div class="card__header">
+        <strong>Workload Suite</strong>
+      </div>
+      <div class="card__body">
+        {{if .SuiteErr}}
+          <div class="ops-pre">{{.SuiteErr}}</div>
+        {{else}}
+          <div class="ops-summary">
+            <span class="ops-badge">{{.Suite.Name}}</span>
+            <span class="ops-badge">version {{.Suite.Version}}</span>
+            <span class="ops-badge">{{len .Suite.Cases}} cases</span>
+          </div>
+          {{range .Suite.Cases}}
+          <details class="ops-detail">
+            <summary><span class="model-id">{{.ID}}</span> · {{.Category}}</summary>
+            {{if .SystemPrompt}}<div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">system prompt</div><div class="ops-pre">{{.SystemPrompt}}</div>{{end}}
+            <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">prompt</div>
+            <div class="ops-pre">{{.Prompt}}</div>
+            {{if .Tools}}
+            <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">tools</div>
+            <ul>
+              {{range .Tools}}<li><code>{{.Name}}</code> — {{.Description}}</li>{{end}}
+            </ul>
+            {{end}}
+            <div style="margin-top:0.5rem;color:var(--text-secondary);font-size:0.82rem;">expectations</div>
+            <ul>
+              {{range .Expect.MustContain}}<li>must contain <code>{{.}}</code></li>{{end}}
+              {{range .Expect.MustNotContain}}<li>must not contain <code>{{.}}</code></li>{{end}}
+              {{if .Expect.ToolCall}}<li>tool call <code>{{.Expect.ToolCall}}</code></li>{{end}}
+              {{if .Expect.NoToolCall}}<li>no tool call</li>{{end}}
+            </ul>
+          </details>
+          {{end}}
+        {{end}}
+      </div>
+    </div>
+  </section>
+</body>
+</html>{{end}}

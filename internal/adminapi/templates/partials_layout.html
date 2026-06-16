@@ -33,6 +33,14 @@
   .model-check-status { color: var(--text-secondary); font-size: 0.78rem; }
   .model-check-status.ok { color: var(--success, #047857); }
   .model-check-status.warn { color: var(--warning, #9a5b00); }
+  .model-check-status.running { color: var(--accent, #2563eb); }
+  .model-op-link { font-size: 0.78rem; color: var(--text-secondary); }
+  .model-op-status { display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; margin-top: 0.35rem; font-size: 0.78rem; }
+  .model-op-status.ok { color: var(--success, #047857); }
+  .model-op-status.warn { color: var(--warning, #9a5b00); }
+  .model-op-status.running { color: var(--accent, #2563eb); }
+  .model-actions__check.htmx-request button, .model-actions__eval.htmx-request button { pointer-events: none; opacity: 0.7; }
+  .model-actions__check .htmx-indicator, .model-actions__eval .htmx-indicator { margin-left: 0.35rem; }
   .model-actions__override { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
   .model-actions__override .form-input { width: 12rem; min-width: 9rem; font-size: 0.8rem; }
   .catalog-list-section { margin-bottom: 1rem; }
@@ -101,6 +109,14 @@
   .usage-empty__icon { font-size: 2.5rem; margin-bottom: 0.75rem; opacity: 0.4; }
   .usage-empty__title { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
   .usage-empty__hint { font-size: 0.875rem; }
+  .ops-summary { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .ops-badge { display: inline-flex; gap: 0.35rem; align-items: center; border-radius: 999px; padding: 0.2rem 0.55rem; font-size: 0.78rem; background: var(--surface-2, rgba(0,0,0,0.05)); color: var(--text-secondary); }
+  .ops-badge.ok { color: var(--success, #047857); }
+  .ops-badge.warn { color: var(--warning, #9a5b00); }
+  .ops-badge.running { color: var(--accent, #2563eb); }
+  .ops-detail { margin-top: 0.4rem; }
+  .ops-detail summary { cursor: pointer; color: var(--text); }
+  .ops-pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2, rgba(0,0,0,0.04)); border-radius: 6px; padding: 0.55rem 0.65rem; margin: 0.35rem 0; }
 
   @media (max-width: 640px) {
     body { padding: 0 0.75rem 1.5rem; }
@@ -147,6 +163,7 @@
   <a class="{{if eq .ActiveTab "chat"}}active{{end}}" href="/chat">Chat</a>
   <a class="{{if eq .ActiveTab "routing"}}active{{end}}" href="/">Routing & Models</a>
   <a class="{{if eq .ActiveTab "analytics"}}active{{end}}" href="/analytics">Analytics</a>
+  <a class="{{if eq .ActiveTab "evals"}}active{{end}}" href="/evals">Evals</a>
   <a class="{{if eq .ActiveTab "prompts"}}active{{end}}" href="/prompts">Prompts</a>
   <a class="{{if eq .ActiveTab "mcp"}}active{{end}}" href="/mcp">MCP</a>
   <a class="{{if eq .ActiveTab "settings"}}active{{end}}" href="/settings">Settings</a>

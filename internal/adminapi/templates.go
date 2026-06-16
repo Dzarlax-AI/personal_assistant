@@ -18,6 +18,7 @@ const (
 	viewModelsContent = "models_content"
 	viewUsage         = "usage"
 	viewAnalytics     = "analytics"
+	viewEvals         = "evals"
 	viewPrompts       = "prompts"
 	viewSettings      = "settings"
 	viewMCP           = "mcp"
@@ -46,6 +47,7 @@ var tmpls = func() map[string]*template.Template {
 		viewModelsContent: "templates/partials_models_browser.html",
 		viewUsage:         "templates/usage.html",
 		viewAnalytics:     "templates/analytics.html",
+		viewEvals:         "templates/evals.html",
 		viewPrompts:       "templates/prompts.html",
 		viewSettings:      "templates/settings.html",
 		viewMCP:           "templates/mcp.html",

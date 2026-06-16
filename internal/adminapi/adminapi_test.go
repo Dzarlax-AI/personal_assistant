@@ -20,6 +20,7 @@ import (
 
 	"telegram-agent/internal/agent"
 	"telegram-agent/internal/config"
+	"telegram-agent/internal/evalpack"
 	"telegram-agent/internal/llm"
 	"telegram-agent/internal/store"
 )
@@ -161,7 +162,30 @@ func TestTemplatesParse(t *testing.T) {
 		viewIndex:         data,
 		viewRouting:       data.Routing, // routing view takes uiRouting directly
 		viewModelsBrowser: data,
-		viewTGAdmin:       tgAdminData{FullAdminURL: "https://assistant.example/admin"},
+		viewEvals: modelOpsData{
+			ActiveTab: "evals",
+			Checks: []modelCheckStatus{{
+				Status:    "free_verified",
+				Provider:  "openrouter",
+				ModelID:   "qwen/qwen3.5-flash:free",
+				CheckedAt: "2026-06-16T10:00:00Z",
+			}},
+			Evals: []modelEvalStatus{{
+				Status:     "passed",
+				Provider:   "openrouter",
+				ModelID:    "qwen/qwen3.5-flash:free",
+				CheckedAt:  "2026-06-16T10:00:00Z",
+				FinishedAt: "2026-06-16T10:00:00Z",
+				Passed:     1,
+				Results:    []evalpack.Result{{ID: "case-1", Category: "smoke", Passed: true}},
+			}},
+			Suite: evalpack.Suite{Version: 1, Name: "suite", Cases: []evalpack.Case{{
+				ID:       "case-1",
+				Category: "smoke",
+				Prompt:   "Say ok",
+			}}},
+		},
+		viewTGAdmin: tgAdminData{FullAdminURL: "https://assistant.example/admin"},
 	}
 	for v, d := range cases {
 		t.Run(v, func(t *testing.T) {
@@ -354,6 +378,121 @@ func TestModelEvalPaidGuard(t *testing.T) {
 	}
 	if isPaidModelEval("ollama", "qwen3:8b") {
 		t.Fatal("Ollama eval should be allowed without paid confirmation")
+	}
+}
+
+func TestEvalsPageRendersChecksReportsAndSuite(t *testing.T) {
+	data := modelOpsData{
+		ActiveTab: "evals",
+		Checks: []modelCheckStatus{{
+			Status:    "checking",
+			Provider:  "openrouter",
+			ModelID:   "qwen/qwen3.5-flash:free",
+			StartedAt: "2026-06-16T10:00:00Z",
+		}},
+		Evals: []modelEvalStatus{{
+			Status:     "failed",
+			Provider:   "openrouter",
+			ModelID:    "x-ai/grok-4.3",
+			Suite:      "personal-assistant-core-workloads",
+			StartedAt:  "2026-06-16T10:00:00Z",
+			FinishedAt: "2026-06-16T10:00:02Z",
+			Passed:     4,
+			Failed:     1,
+			Failures:   []string{"tool-web-fetch-intent: missing tool call"},
+			Results: []evalpack.Result{{
+				ID:             "tool-web-fetch-intent",
+				Category:       "web_fetch",
+				Passed:         false,
+				LatencyMS:      1200,
+				ContentPreview: "I cannot open links.",
+				Failures:       []string{"missing tool call \"web_fetch\""},
+			}},
+		}},
+		Suite: evalpack.Suite{Version: 1, Name: "personal-assistant-core-workloads", Cases: []evalpack.Case{{
+			ID:       "tool-web-fetch-intent",
+			Category: "web_fetch",
+			Prompt:   "Open https://example.com",
+			Expect:   evalpack.Expect{ToolCall: "web_fetch"},
+		}}},
+	}
+	var buf bytes.Buffer
+	if err := render(&buf, viewEvals, data); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, want := range []string{"Model Operations", "checking", "x-ai/grok-4.3", "tool-web-fetch-intent", "Open https://example.com", "missing tool call"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("evals page missing %q: %s", want, html)
+		}
+	}
+}
+
+func TestModelChecksPersistCheckingBeforeProbe(t *testing.T) {
+	s, _ := newTGModelTestServer(t)
+	settings := &fakeSettingsStore{values: map[string]string{}}
+	s.settings = settings
+	s.modelProbe = func(ctx context.Context, provider, modelID string, _ llm.Capabilities) modelCheckStatus {
+		got := s.modelCheckStatus(ctx, provider, modelID)
+		if got.Status != "checking" || got.StartedAt == "" {
+			t.Fatalf("expected checking state before probe, got %+v", got)
+		}
+		return modelCheckStatus{Status: "free_verified", CheckedAt: time.Now().Format(time.RFC3339), LatencyMS: 22}
+	}
+
+	form := url.Values{}
+	form.Set("provider", "openrouter")
+	form.Set("model_id", "qwen/qwen3.5-flash:free")
+	req := httptest.NewRequest(http.MethodPost, "/models/check", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleModelCheck(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	got := s.modelCheckStatus(context.Background(), "openrouter", "qwen/qwen3.5-flash:free")
+	if got.Status != "free_verified" || got.LatencyMS != 22 {
+		t.Fatalf("final check state not persisted: %+v", got)
+	}
+}
+
+func TestModelEvalLoadLegacyAndDetailedReports(t *testing.T) {
+	s := newTestServer(t)
+	legacy := map[string]modelEvalStatus{
+		modelCheckKey("openrouter", "legacy/model"): {
+			CheckedAt: "2026-06-16T10:00:00Z",
+			Passed:    4,
+			Failed:    1,
+			Failures:  []string{"legacy failure"},
+		},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelEvals: string(data)}}
+	evals := s.loadModelEvals(context.Background())
+	got := evals[modelCheckKey("openrouter", "legacy/model")]
+	if got.Status != "failed" || got.Provider != "openrouter" || got.ModelID != "legacy/model" {
+		t.Fatalf("legacy eval not normalized: %+v", got)
+	}
+
+	detailed := modelEvalStatus{
+		Status:    "passed",
+		Provider:  "openrouter",
+		ModelID:   "new/model",
+		Suite:     "suite",
+		StartedAt: "2026-06-16T10:01:00Z",
+		Passed:    1,
+		Results:   []evalpack.Result{{ID: "case-1", Category: "smoke", Passed: true, ContentPreview: "ok"}},
+	}
+	if err := s.saveModelEval(context.Background(), "openrouter", "new/model", detailed); err != nil {
+		t.Fatal(err)
+	}
+	evals = s.loadModelEvals(context.Background())
+	got = evals[modelCheckKey("openrouter", "new/model")]
+	if got.Status != "passed" || len(got.Results) != 1 || got.Results[0].ContentPreview != "ok" {
+		t.Fatalf("detailed eval not persisted: %+v", got)
 	}
 }
 

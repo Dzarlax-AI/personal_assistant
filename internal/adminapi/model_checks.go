@@ -29,7 +29,11 @@ const (
 
 type modelCheckStatus struct {
 	Status    string `json:"status"`
+	Provider  string `json:"provider,omitempty"`
+	ModelID   string `json:"model_id,omitempty"`
+	StartedAt string `json:"started_at,omitempty"`
 	CheckedAt string `json:"checked_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 	LatencyMS int64  `json:"latency_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
@@ -106,12 +110,23 @@ func (s *Server) saveModelCheck(ctx context.Context, provider, modelID string, s
 	if checks == nil {
 		checks = map[string]modelCheckStatus{}
 	}
-	checks[modelCheckKey(provider, modelID)] = status
+	checks[modelCheckKey(provider, modelID)] = normalizeSingleModelCheck(provider, modelID, status)
 	data, err := json.Marshal(checks)
 	if err != nil {
 		return err
 	}
 	return s.settings.PutSetting(ctx, settingKeyModelChecks, string(data))
+}
+
+func checkingModelCheck(provider, modelID string) modelCheckStatus {
+	now := time.Now().Format(time.RFC3339)
+	return modelCheckStatus{
+		Status:    "checking",
+		Provider:  provider,
+		ModelID:   modelID,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
 }
 
 func (s *Server) modelCheckInterval() time.Duration {
@@ -221,11 +236,32 @@ func isBlockedModelCheckError(message string) bool {
 
 func normalizeModelChecks(checks map[string]modelCheckStatus) {
 	for key, check := range checks {
-		if check.Status == "free_degraded" && isBlockedModelCheckError(check.Error) {
-			check.Status = "free_blocked"
-			checks[key] = check
+		provider, modelID, _ := strings.Cut(key, "|")
+		checks[key] = normalizeSingleModelCheck(provider, modelID, check)
+	}
+}
+
+func normalizeSingleModelCheck(provider, modelID string, check modelCheckStatus) modelCheckStatus {
+	if check.Provider == "" {
+		check.Provider = provider
+	}
+	if check.ModelID == "" {
+		check.ModelID = modelID
+	}
+	if check.Status == "" && check.CheckedAt != "" {
+		if check.Error != "" {
+			check.Status = "free_degraded"
+		} else {
+			check.Status = "free_verified"
 		}
 	}
+	if check.Status == "free_degraded" && isBlockedModelCheckError(check.Error) {
+		check.Status = "free_blocked"
+	}
+	if check.UpdatedAt == "" {
+		check.UpdatedAt = check.CheckedAt
+	}
+	return check
 }
 
 func (s *Server) startModelCheckScheduler() {
