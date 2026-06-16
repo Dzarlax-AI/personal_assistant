@@ -51,6 +51,7 @@ type Server struct {
 	httpSrv           *http.Server
 	modelChecksCancel context.CancelFunc
 	modelChecksOnce   sync.Once
+	modelEvalMu       sync.Mutex
 }
 
 // SetMCPReloader wires the hot-reload hook so saving/deleting MCP servers in
@@ -143,6 +144,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/", authed(http.HandlerFunc(s.handleIndex)))
 	mux.Handle("/models/override", authed(http.HandlerFunc(s.handleModelOverride)))
 	mux.Handle("/models/check", authed(http.HandlerFunc(s.handleModelCheck)))
+	mux.Handle("/models/eval", authed(http.HandlerFunc(s.handleModelEval)))
 	mux.Handle("/models", authed(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/routing", authed(http.HandlerFunc(s.handleRouting)))
 	mux.Handle("/slots/", authed(http.HandlerFunc(s.handleSlotAssign))) // POST /slots/{slot}/assign

@@ -109,6 +109,7 @@
       7d: {{.Telemetry.Calls}} calls · {{.Telemetry.AvgLatencyMS}} ms · {{printf "%.0f%%" .Telemetry.ErrorRatePct}} errors · {{printf "$%.4f" .Telemetry.CostUSD}}
     </div>
     {{end}}
+    {{template "model_eval_status" .}}
 
     {{template "model_actions" dict "Model" . "Root" $root}}
   </article>
@@ -139,6 +140,30 @@
       {{end}}
     </div>
     {{end}}
+    <div class="model-actions__eval">
+      {{if or .Free (eq $root.CatalogProvider "ollama") (eq $root.CatalogProvider "local")}}
+      <input type="hidden" name="confirm_paid_eval" value="1">
+      <button class="btn btn--small btn--ghost"
+              hx-post="/models/eval"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-target="#models-content"
+              hx-swap="outerHTML">
+        Run eval
+      </button>
+      {{else}}
+      <label style="display:flex;align-items:center;gap:0.3rem;color:var(--warning,#9a5b00);font-size:0.78rem;">
+        <input type="checkbox" name="confirm_paid_eval" value="1">
+        Paid eval may spend credits
+      </label>
+      <button class="btn btn--small btn--ghost"
+              hx-post="/models/eval"
+              hx-include="#models-filters, closest [data-model-card]"
+              hx-target="#models-content"
+              hx-swap="outerHTML">
+        Run paid eval
+      </button>
+      {{end}}
+    </div>
     <div class="model-actions__override">
       <input class="form-input" name="note" type="text" value="{{.OverrideNote}}" placeholder="Override note">
       <button class="btn btn--small btn--ghost"
@@ -217,6 +242,7 @@
         · {{printf "$%.4f" .Telemetry.CostUSD}}
       </div>
       {{end}}
+      {{template "model_eval_status" .}}
       {{template "model_actions" dict "Model" . "Root" $root}}
     </td>
     <td class="price-cell">{{priceUSD .PromptPrice}}</td>
@@ -239,5 +265,17 @@
     <td class="price-cell" title="OpenRouter rankings market signal. Advisory only; not used as quality.">{{if gt .Market.Rank 0}}#{{.Market.Rank}}{{else if gt .Market.Share 0.0}}{{printf "%.1f%%" .Market.Share}}{{else if gt .Market.Score 0.0}}✓{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
     <td class="price-cell" title="Quality per $ — role-specific in Suggest, agentic/prompt otherwise.">{{if gt .ValuePerDollar 0.0}}{{printf "%.0f" .ValuePerDollar}}{{else}}<span style="color:var(--text-secondary)">—</span>{{end}}</td>
   </tr>
+  {{end}}
+{{end}}
+
+{{define "model_eval_status"}}
+  {{if .EvalStatus.CheckedAt}}
+  <div style="margin-top:4px;color:{{if gt .EvalStatus.Failed 0}}var(--warning,#9a5b00){{else}}var(--success,#0f7b45){{end}};font-size:0.78rem;">
+    eval:
+    {{if gt .EvalStatus.Failed 0}}failed{{else}}passed{{end}}
+    · {{.EvalStatus.Passed}}/{{add .EvalStatus.Passed .EvalStatus.Failed}} cases
+    {{if .EvalStatus.DurationMS}} · {{.EvalStatus.DurationMS}} ms{{end}}
+    {{range .EvalStatus.Failures}} · {{.}}{{end}}
+  </div>
   {{end}}
 {{end}}
