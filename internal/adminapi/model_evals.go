@@ -17,6 +17,7 @@ const (
 	settingKeyModelEvals = "recommendation.model_evals"
 	modelEvalDatasetPath = "evals/workload.json"
 	modelEvalTimeout     = 45 * time.Second
+	modelEvalStaleAfter  = modelEvalTimeout + 15*time.Second
 )
 
 type modelEvalStatus struct {
@@ -69,16 +70,20 @@ func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.modelEvalMu.Unlock()
-	if err := s.saveModelEval(r.Context(), provider, modelID, runningModelEval(provider, modelID)); err != nil {
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer saveCancel()
+	if err := s.saveModelEval(saveCtx, provider, modelID, runningModelEval(provider, modelID)); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
 	caps := s.lookupCapsFor(r.Context(), provider, modelID)
-	ctx, cancel := context.WithTimeout(r.Context(), modelEvalTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), modelEvalTimeout)
 	defer cancel()
 	status := s.runModelEval(ctx, provider, modelID, caps)
-	if err := s.saveModelEval(ctx, provider, modelID, status); err != nil {
+	saveCtx, saveCancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer saveCancel()
+	if err := s.saveModelEval(saveCtx, provider, modelID, status); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -258,7 +263,28 @@ func normalizeSingleModelEval(provider, modelID string, status modelEvalStatus) 
 	if status.CheckedAt == "" && status.FinishedAt != "" {
 		status.CheckedAt = status.FinishedAt
 	}
+	if status.Status == "running" && isStaleModelEval(status, time.Now()) {
+		now := time.Now().Format(time.RFC3339)
+		status.Status = "error"
+		status.FinishedAt = now
+		status.UpdatedAt = now
+		status.CheckedAt = now
+		status.Failed = 1
+		status.Error = "model eval timed out before completion"
+		status.Failures = []string{status.Error}
+	}
 	return status
+}
+
+func isStaleModelEval(status modelEvalStatus, now time.Time) bool {
+	if status.StartedAt == "" {
+		return false
+	}
+	started, err := time.Parse(time.RFC3339, status.StartedAt)
+	if err != nil {
+		return false
+	}
+	return now.Sub(started) > modelEvalStaleAfter
 }
 
 type modelOpsData struct {

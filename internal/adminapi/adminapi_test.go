@@ -539,6 +539,29 @@ func TestModelEvalLoadLegacyAndDetailedReports(t *testing.T) {
 	}
 }
 
+func TestModelEvalNormalizesStaleRunningStatus(t *testing.T) {
+	s := newTestServer(t)
+	stale := map[string]modelEvalStatus{
+		modelCheckKey("openrouter", "stale/model:free"): {
+			Status:    "running",
+			Provider:  "openrouter",
+			ModelID:   "stale/model:free",
+			StartedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+			UpdatedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+		},
+	}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.settings = &fakeSettingsStore{values: map[string]string{settingKeyModelEvals: string(data)}}
+	evals := s.loadModelEvals(context.Background())
+	got := evals[modelCheckKey("openrouter", "stale/model:free")]
+	if got.Status != "error" || got.Error == "" || got.Failed != 1 {
+		t.Fatalf("stale running eval not normalized to error: %+v", got)
+	}
+}
+
 func TestWebModelCheckPersistsFreeModelStatus(t *testing.T) {
 	s, _ := newTGModelTestServer(t)
 	settings := &fakeSettingsStore{values: map[string]string{}}
