@@ -18,8 +18,11 @@ type Suite struct {
 }
 
 type Case struct {
-	ID           string     `json:"id"`
-	Category     string     `json:"category"`
+	ID          string   `json:"id"`
+	Category    string   `json:"category"`
+	Purpose     string   `json:"purpose,omitempty"`
+	Limitations []string `json:"limitations,omitempty"`
+
 	SystemPrompt string     `json:"system_prompt,omitempty"`
 	Prompt       string     `json:"prompt"`
 	Tools        []llm.Tool `json:"tools,omitempty"`
@@ -27,10 +30,15 @@ type Case struct {
 }
 
 type Expect struct {
-	MustContain    []string `json:"must_contain,omitempty"`
-	MustNotContain []string `json:"must_not_contain,omitempty"`
-	ToolCall       string   `json:"tool_call,omitempty"`
-	NoToolCall     bool     `json:"no_tool_call,omitempty"`
+	MustContain    []string   `json:"must_contain,omitempty"`
+	MustContainAny [][]string `json:"must_contain_any,omitempty"`
+	MustNotContain []string   `json:"must_not_contain,omitempty"`
+
+	ToolCall     string            `json:"tool_call,omitempty"`
+	ToolArgs     map[string]string `json:"tool_args,omitempty"`
+	NoToolCall   bool              `json:"no_tool_call,omitempty"`
+	MaxToolCalls int               `json:"max_tool_calls,omitempty"`
+	MaxChars     int               `json:"max_chars,omitempty"`
 }
 
 type Options struct {
@@ -98,6 +106,20 @@ func ValidateSuite(suite Suite) error {
 		}
 		if strings.TrimSpace(c.Prompt) == "" {
 			return fmt.Errorf("case %q has empty prompt", c.ID)
+		}
+		if c.Expect.MaxToolCalls < 0 {
+			return fmt.Errorf("case %q has negative max_tool_calls", c.ID)
+		}
+		if c.Expect.MaxChars < 0 {
+			return fmt.Errorf("case %q has negative max_chars", c.ID)
+		}
+		if len(c.Expect.ToolArgs) > 0 && strings.TrimSpace(c.Expect.ToolCall) == "" {
+			return fmt.Errorf("case %q has tool_args without tool_call", c.ID)
+		}
+		for groupIdx, group := range c.Expect.MustContainAny {
+			if len(group) == 0 {
+				return fmt.Errorf("case %q has empty must_contain_any group %d", c.ID, groupIdx)
+			}
 		}
 		for _, tool := range c.Tools {
 			if strings.TrimSpace(tool.Name) == "" {
@@ -170,27 +192,88 @@ func Evaluate(expect Expect, resp llm.Response) []string {
 			failures = append(failures, fmt.Sprintf("missing content %q", want))
 		}
 	}
+	for _, group := range expect.MustContainAny {
+		if !containsAny(content, group) {
+			failures = append(failures, fmt.Sprintf("missing one of %q", group))
+		}
+	}
 	for _, deny := range expect.MustNotContain {
 		if strings.Contains(content, strings.ToLower(deny)) {
 			failures = append(failures, fmt.Sprintf("forbidden content %q", deny))
 		}
 	}
-	if expect.ToolCall != "" && !hasToolCall(resp.ToolCalls, expect.ToolCall) {
-		failures = append(failures, fmt.Sprintf("missing tool call %q", expect.ToolCall))
+	var matchedCall *llm.ToolCall
+	if expect.ToolCall != "" {
+		matchedCall = findToolCall(resp.ToolCalls, expect.ToolCall)
+		if matchedCall == nil {
+			failures = append(failures, fmt.Sprintf("missing tool call %q", expect.ToolCall))
+		}
+	}
+	if matchedCall != nil && len(expect.ToolArgs) > 0 {
+		failures = append(failures, evaluateToolArgs(expect.ToolCall, expect.ToolArgs, matchedCall.Arguments)...)
 	}
 	if expect.NoToolCall && len(resp.ToolCalls) > 0 {
 		failures = append(failures, "unexpected tool call")
 	}
+	if expect.MaxToolCalls > 0 && len(resp.ToolCalls) > expect.MaxToolCalls {
+		failures = append(failures, fmt.Sprintf("too many tool calls: got %d, max %d", len(resp.ToolCalls), expect.MaxToolCalls))
+	}
+	if expect.MaxChars > 0 && len([]rune(strings.TrimSpace(resp.Content))) > expect.MaxChars {
+		failures = append(failures, fmt.Sprintf("response too long: got %d chars, max %d", len([]rune(strings.TrimSpace(resp.Content))), expect.MaxChars))
+	}
 	return failures
 }
 
-func hasToolCall(calls []llm.ToolCall, name string) bool {
-	for _, call := range calls {
-		if call.Name == name {
+func containsAny(content string, group []string) bool {
+	for _, want := range group {
+		if strings.Contains(content, strings.ToLower(want)) {
 			return true
 		}
 	}
 	return false
+}
+
+func findToolCall(calls []llm.ToolCall, name string) *llm.ToolCall {
+	for i := range calls {
+		call := &calls[i]
+		if call.Name == name {
+			return call
+		}
+	}
+	return nil
+}
+
+func evaluateToolArgs(toolName string, expected map[string]string, rawArgs string) []string {
+	var failures []string
+	var actual map[string]any
+	if strings.TrimSpace(rawArgs) == "" {
+		return []string{fmt.Sprintf("tool call %q has empty arguments", toolName)}
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &actual); err != nil {
+		return []string{fmt.Sprintf("tool call %q has invalid JSON arguments", toolName)}
+	}
+	for key, want := range expected {
+		got, ok := actual[key]
+		if !ok {
+			failures = append(failures, fmt.Sprintf("tool call %q missing argument %q", toolName, key))
+			continue
+		}
+		if actualArgString(got) != want {
+			failures = append(failures, fmt.Sprintf("tool call %q argument %q = %q, want %q", toolName, key, actualArgString(got), want))
+		}
+	}
+	return failures
+}
+
+func actualArgString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 func preview(s string, max int) string {

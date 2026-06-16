@@ -1,27 +1,81 @@
 {
-  "version": 1,
-  "name": "personal-assistant-core-workloads",
+  "version": 2,
+  "name": "personal-assistant-role-workloads",
   "cases": [
     {
-      "id": "ru-chat-concise",
-      "category": "russian_chat",
-      "system_prompt": "Reply in Russian. Be concise and practical.",
-      "prompt": "Пользователь спрашивает: \"Что лучше сделать сначала: проверить логи сервиса или сразу перезапустить контейнер?\" Ответь коротко, как инженер.",
+      "id": "simple-ping",
+      "category": "simple",
+      "purpose": "Checks that a small model can handle the very common short Telegram liveness turn without tools or filler.",
+      "limitations": ["Does not measure reasoning quality."],
+      "system_prompt": "Reply in Russian unless the user writes in another language. Be concise and practical.",
+      "prompt": "Ping?",
       "expect": {
-        "must_contain": ["логи"],
+        "must_contain_any": [["pong", "на связи", "да", "работаю"]],
         "must_not_contain": ["As an AI"],
-        "no_tool_call": true
+        "no_tool_call": true,
+        "max_chars": 120
       }
     },
     {
-      "id": "tool-calendar-intent",
+      "id": "simple-ops-logs-first",
+      "category": "simple",
+      "purpose": "Checks concise operational advice for a real admin/debug pattern.",
+      "limitations": ["Does not prove the model can inspect logs itself."],
+      "system_prompt": "Reply in Russian. Give the next action first. Do not use tools.",
+      "prompt": "Бот не отвечает. Что первым проверить?",
+      "expect": {
+        "must_contain_any": [["логи", "лог"], ["контейнер", "сервис", "процесс", "health"]],
+        "must_not_contain": ["сразу перезапусти все", "As an AI"],
+        "no_tool_call": true,
+        "max_chars": 260
+      }
+    },
+    {
+      "id": "default-admin-empty-models",
+      "category": "default",
+      "purpose": "Checks admin/model-catalog diagnosis without brittle English-only wording.",
+      "limitations": ["Does not query the real database."],
+      "system_prompt": "Act as a pragmatic senior engineer. Give the next diagnostic step first.",
+      "prompt": "После деплоя админка открывается, но список моделей пустой. Что проверишь первым?",
+      "expect": {
+        "must_contain_any": [
+          ["model_capabilities", "capabilities", "кэш моделей", "таблиц"],
+          ["логи", "запрос", "refresh", "hydration", "openrouter"]
+        ],
+        "must_not_contain": ["перезапусти все"],
+        "no_tool_call": true,
+        "max_chars": 700
+      }
+    },
+    {
+      "id": "default-safe-deploy-smoke",
+      "category": "default",
+      "purpose": "Checks that deployment advice includes service state, health endpoint, and logs instead of only reporting CI success.",
+      "limitations": ["Does not run the deployment."],
+      "system_prompt": "Reply in Russian. Be concrete and operational.",
+      "prompt": "CI прошел, давай деплоить. Какие проверки после docker compose up обязательны?",
+      "expect": {
+        "must_contain_any": [
+          ["health", "healthz"],
+          ["логи", "logs"],
+          ["docker compose ps", "контейнер", "статус"]
+        ],
+        "must_not_contain": ["ничего проверять не нужно"],
+        "no_tool_call": true,
+        "max_chars": 900
+      }
+    },
+    {
+      "id": "tool-calendar-morning-window",
       "category": "tool_use",
-      "system_prompt": "Use tools when the user asks for data that only a tool can know.",
-      "prompt": "Проверь мой календарь на завтра утром и скажи, есть ли свободное окно на 30 минут.",
+      "purpose": "Checks calendar lookup routing with fixed dates, avoiding ambiguous relative-date behavior.",
+      "limitations": ["Only validates tool selection and top-level arguments; it does not execute a real calendar read."],
+      "system_prompt": "Use tools for calendar data. Use the exact ISO date range requested by the user.",
+      "prompt": "Посмотри мой календарь 2026-06-17 утром с 09:00 до 12:00 по Белграду и скажи, есть ли окно на 30 минут.",
       "tools": [
         {
-          "name": "calendar_list_events",
-          "description": "List calendar events for a date range.",
+          "name": "calendar__get_events",
+          "description": "List calendar events for an exact date-time range.",
           "input_schema": {
             "type": "object",
             "properties": {
@@ -33,50 +87,196 @@
         }
       ],
       "expect": {
-        "tool_call": "calendar_list_events"
+        "tool_call": "calendar__get_events",
+        "tool_args": {
+          "date_from": "2026-06-17T09:00:00+02:00",
+          "date_to": "2026-06-17T12:00:00+02:00"
+        },
+        "max_tool_calls": 1
       }
     },
     {
-      "id": "tool-web-fetch-intent",
-      "category": "web_fetch",
-      "system_prompt": "Use tools when the user asks you to inspect a URL. Do not invent page contents.",
-      "prompt": "Открой https://example.com/release-notes и кратко перечисли изменения в последнем релизе.",
+      "id": "tool-tasks-today",
+      "category": "tool_use",
+      "purpose": "Checks task-list routing for short daily-planning prompts seen in production.",
+      "limitations": ["Only validates tool call shape, not task ranking quality."],
+      "system_prompt": "Use tools when the user asks about their tasks. Keep tool arguments minimal and explicit.",
+      "prompt": "Что мне нужно сделать на 2026-06-17?",
       "tools": [
         {
-          "name": "web_fetch",
-          "description": "Fetch a URL and return readable page text.",
+          "name": "tasks__get_tasks",
+          "description": "Get Todoist tasks for a date or project.",
           "input_schema": {
             "type": "object",
             "properties": {
-              "url": {"type": "string"}
+              "date": {"type": "string"}
             },
-            "required": ["url"]
+            "required": ["date"]
           }
         }
       ],
       "expect": {
-        "tool_call": "web_fetch"
+        "tool_call": "tasks__get_tasks",
+        "tool_args": {
+          "date": "2026-06-17"
+        },
+        "max_tool_calls": 1
       }
     },
     {
-      "id": "compaction-summary",
+      "id": "tool-memory-recall",
+      "category": "tool_use",
+      "purpose": "Checks personal-memory recall for short 'check memory' style prompts.",
+      "limitations": ["Does not validate the factual answer after memory retrieval."],
+      "system_prompt": "Use personal memory tools when the user asks what you remember.",
+      "prompt": "Проверь память: что я сохранял про измерение продуктивности разработчиков?",
+      "tools": [
+        {
+          "name": "personal-memory__recall_facts",
+          "description": "Recall saved user facts by semantic query.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"}
+            },
+            "required": ["query"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "personal-memory__recall_facts",
+        "max_tool_calls": 1
+      }
+    },
+    {
+      "id": "tool-health-sleep-summary",
+      "category": "tool_use",
+      "purpose": "Checks health-dashboard routing for the recurring sleep/health questions in production.",
+      "limitations": ["Does not judge medical correctness; it only checks that private health data is fetched through the tool."],
+      "system_prompt": "Use health-dashboard tools for the user's health data. Do not infer medical causes from tool-free context.",
+      "prompt": "Как я спал 2026-06-14?",
+      "tools": [
+        {
+          "name": "health-dashboard__get_sleep_summary",
+          "description": "Get a sleep summary for a specific date.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "date": {"type": "string"}
+            },
+            "required": ["date"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "health-dashboard__get_sleep_summary",
+        "tool_args": {
+          "date": "2026-06-14"
+        },
+        "max_tool_calls": 1
+      }
+    },
+    {
+      "id": "tool-file-document-search",
+      "category": "tool_use",
+      "purpose": "Checks file/document lookup routing for short prompts about remembered documents.",
+      "limitations": ["Does not validate filesystem permissions or final document content."],
+      "system_prompt": "Use filesystem search when the user asks to find something in their documents.",
+      "prompt": "Посмотри в документах, где была заметка про Тулу.",
+      "tools": [
+        {
+          "name": "fs_search",
+          "description": "Search files under the assistant context root.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"}
+            },
+            "required": ["query"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "fs_search",
+        "max_tool_calls": 1
+      }
+    },
+    {
+      "id": "tool-web-freshness-prooflinks",
+      "category": "tool_use",
+      "purpose": "Checks web-search routing for freshness/prooflink prompts seen in news conversations.",
+      "limitations": ["Does not validate final source quality."],
+      "system_prompt": "Use web search for current events and proof links. Do not invent sources.",
+      "prompt": "А что в Белграде произошло 2026-05-01? Дай пруфлинки.",
+      "tools": [
+        {
+          "name": "web_search",
+          "description": "Search the web for current or source-backed information.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"}
+            },
+            "required": ["query"]
+          }
+        }
+      ],
+      "expect": {
+        "tool_call": "web_search",
+        "max_tool_calls": 1
+      }
+    },
+    {
+      "id": "complex-model-routing-tradeoff",
+      "category": "complex",
+      "purpose": "Checks model-selection reasoning without fabricated benchmark numbers.",
+      "limitations": ["Does not prove the recommendation is globally optimal."],
+      "system_prompt": "Reply in Russian. Be explicit about uncertainty. Do not fabricate benchmark numbers.",
+      "prompt": "Стоит ли полностью исключить free модели из роутинга, если часть из них внезапно становится платной или недоступной?",
+      "expect": {
+        "must_contain_any": [
+          ["не стоит", "не полностью", "оставить"],
+          ["провер", "healthcheck", "availability", "доступност"],
+          ["fallback", "резерв"],
+          ["стоимост", "цена", "paid", "платн"]
+        ],
+        "must_not_contain": ["100%", "гарантированно всегда"],
+        "no_tool_call": true,
+        "max_chars": 1200
+      }
+    },
+    {
+      "id": "compaction-preserve-state",
       "category": "compaction",
-      "system_prompt": "Summarize the conversation state for future turns. Preserve decisions, unresolved tasks, and concrete identifiers.",
-      "prompt": "Сожми историю: решили вынести ARM docker build в manual workflow; сделали compact model catalog; free модели проверяем перед назначением; остался watchlist и eval pack. Нужно продолжить без потери контекста.",
+      "purpose": "Checks that compaction preserves decisions, unresolved tasks, and caveats from a long working session.",
+      "limitations": ["Does not test semantic clustering over real stored embeddings."],
+      "system_prompt": "Summarize the conversation state for future turns. Preserve decisions, unresolved tasks, concrete identifiers, and safety caveats.",
+      "prompt": "Сожми историю: PR #19 задеплоен; evals/workload.json теперь попадает в Docker image; бесплатные модели можно проверять вручную; paid eval только после подтверждения; нужно заменить синтетические evals на role-based suite из продовых паттернов; здоровье нельзя интерпретировать как диагноз без caveat.",
       "expect": {
-        "must_contain": ["ARM", "watchlist", "eval"],
-        "no_tool_call": true
+        "must_contain_any": [
+          ["PR #19", "19"],
+          ["evals/workload.json", "workload"],
+          ["paid eval", "платн"],
+          ["role-based", "role based", "ролев"],
+          ["здоров", "диагноз", "caveat"]
+        ],
+        "must_not_contain": ["уже заменили role-based suite"],
+        "no_tool_call": true,
+        "max_chars": 1000
       }
     },
     {
-      "id": "admin-debug-next-step",
-      "category": "admin_debug",
-      "system_prompt": "Act as a pragmatic senior engineer. Give the next diagnostic step first.",
-      "prompt": "После деплоя админка открывается, но список моделей пустой. Что проверишь первым?",
+      "id": "multimodal-absent-image",
+      "category": "multimodal_readiness",
+      "purpose": "Checks that a model does not hallucinate screenshot contents when no image is attached.",
+      "limitations": ["Actual image understanding requires a later multimodal eval runner."],
+      "system_prompt": "Reply in Russian. If an image is not provided, do not claim to see it.",
+      "prompt": "Посмотри фотку предыдущую и скажи, что на ней не так.",
       "expect": {
-        "must_contain": ["capabilities"],
-        "must_not_contain": ["перезапусти все"],
-        "no_tool_call": true
+        "must_contain_any": [["не вижу", "нет изображения", "не прикреплена", "нужна фот", "пришли"]],
+        "must_not_contain": ["на фото видно", "я вижу"],
+        "no_tool_call": true,
+        "max_chars": 360
       }
     }
   ]
