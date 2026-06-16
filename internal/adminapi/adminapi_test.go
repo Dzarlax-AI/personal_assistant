@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -410,6 +411,16 @@ func TestModelEvalPaidGuard(t *testing.T) {
 	}
 	if isPaidModelEval("ollama", "qwen3:8b") {
 		t.Fatal("Ollama eval should be allowed without paid confirmation")
+	}
+}
+
+func TestDockerfilePackagesEvalWorkload(t *testing.T) {
+	data, err := os.ReadFile("../../Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "COPY --from=builder /app/evals ./evals") {
+		t.Fatal("runtime Docker image must include evals/workload.json")
 	}
 }
 
