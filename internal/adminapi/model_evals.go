@@ -16,8 +16,8 @@ import (
 const (
 	settingKeyModelEvals = "recommendation.model_evals"
 	modelEvalDatasetPath = "evals/workload.json"
-	modelEvalTimeout     = 45 * time.Second
-	modelEvalStaleAfter  = modelEvalTimeout + 15*time.Second
+	modelEvalCaseTimeout = 90 * time.Second
+	modelEvalStaleAfter  = 30 * time.Minute
 )
 
 type modelEvalStatus struct {
@@ -78,9 +78,7 @@ func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	caps := s.lookupCapsFor(r.Context(), provider, modelID)
-	ctx, cancel := context.WithTimeout(context.Background(), modelEvalTimeout)
-	defer cancel()
-	status := s.runModelEval(ctx, provider, modelID, caps)
+	status := s.runModelEval(context.Background(), provider, modelID, caps)
 	saveCtx, saveCancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer saveCancel()
 	if err := s.saveModelEval(saveCtx, provider, modelID, status); err != nil {
@@ -127,7 +125,7 @@ func (s *Server) runModelEval(ctx context.Context, providerType, modelID string,
 	if err != nil {
 		return failedModelEval(providerType, modelID, err.Error())
 	}
-	report := evalpack.RunSuite(ctx, provider, suite, evalpack.Options{Timeout: 12 * time.Second})
+	report := evalpack.RunSuite(ctx, provider, suite, evalpack.Options{Timeout: modelEvalCaseTimeout})
 	now := time.Now().Format(time.RFC3339)
 	statusText := "passed"
 	if report.Failed > 0 {
