@@ -351,7 +351,7 @@ The admin API never imports the Authentik library — it only _trusts_ the forwa
   - `cfg.mcp.servers` (JSON map — source of truth for MCP list)
 - **Bootstrap defaults** → baked `config.yaml` (7 named slots: simple/default/complex/classifier/compaction/fallback/multimodal)
 
-Admin UI tabs editing these: **Routing & Models**, **Analytics**, **Prompts**, **Settings**, **MCP**. First boot with a populated `config/mcp.json` auto-migrates the file into `cfg.mcp.servers` so the mount can be removed on the next deploy. Codex Bridge MCP sync: when `MCP_BRIDGE_EXPORT_PATH` is set, every save mirrors the list to that path in Codex Desktop format (atomic tempfile+rename).
+Admin UI tabs editing these: **Routing & Models**, **Analytics**, **Prompts**, **Settings**, **MCP**. First boot with a populated `config/mcp.json` auto-migrates the file into `cfg.mcp.servers` so the mount can be removed on the next deploy. Codex Bridge MCP sync: when `MCP_BRIDGE_EXPORT_PATH` is set, every save mirrors the list to that path in Claude Desktop format (atomic tempfile+rename).
 
 ### Adding multimodal content types
 

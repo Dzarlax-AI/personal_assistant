@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	settingKeyModelEvals = "recommendation.model_evals"
-	modelEvalDatasetPath = "evals/workload.json"
-	modelEvalCaseTimeout = 90 * time.Second
-	modelEvalStaleAfter  = 30 * time.Minute
+	settingKeyModelEvals  = "recommendation.model_evals"
+	modelEvalDatasetPath  = "evals/workload.json"
+	modelEvalCaseTimeout  = 90 * time.Second
+	modelEvalSuiteTimeout = 20 * time.Minute
+	modelEvalStaleAfter   = 30 * time.Minute
 )
 
 type modelEvalStatus struct {
@@ -78,7 +79,9 @@ func (s *Server) handleModelEval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	caps := s.lookupCapsFor(r.Context(), provider, modelID)
-	status := s.runModelEval(context.Background(), provider, modelID, caps)
+	evalCtx, evalCancel := context.WithTimeout(r.Context(), modelEvalSuiteTimeout)
+	defer evalCancel()
+	status := s.runModelEval(evalCtx, provider, modelID, caps)
 	saveCtx, saveCancel = context.WithTimeout(context.Background(), 5*time.Second)
 	defer saveCancel()
 	if err := s.saveModelEval(saveCtx, provider, modelID, status); err != nil {
